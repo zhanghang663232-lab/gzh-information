@@ -1,0 +1,10 @@
+run/
+output/
+.env
+.env.*
+cookies.json
+*.cookie
+*.cookies
+credential*.json
+*pass_ticket*
+*wap_sid2*
