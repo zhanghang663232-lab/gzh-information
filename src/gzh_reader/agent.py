@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import hashlib
+import time
 from dataclasses import dataclass
 from enum import StrEnum
 from pathlib import Path
@@ -99,10 +100,33 @@ class NativeMacObserver:
         import Quartz
         import Vision
 
-        image = Quartz.CGWindowListCreateImage(
-            Quartz.CGRectInfinite,
+        workspace = AppKit.NSWorkspace.sharedWorkspace()
+        wechat = next(
+            (app for app in workspace.runningApplications()
+             if str(app.localizedName() or "").lower() in {"wechat", "微信"}),
+            None,
+        )
+        if wechat is None:
+            raise RuntimeError("没有检测到正在运行的 Mac 微信")
+        wechat.activateWithOptions_(AppKit.NSApplicationActivateIgnoringOtherApps)
+        time.sleep(0.4)
+
+        windows = Quartz.CGWindowListCopyWindowInfo(
             Quartz.kCGWindowListOptionOnScreenOnly,
             Quartz.kCGNullWindowID,
+        )
+        candidates = [
+            item for item in windows
+            if str(item.get(Quartz.kCGWindowOwnerName, "")).lower() in {"wechat", "微信"}
+            and int(item.get(Quartz.kCGWindowLayer, 1)) == 0
+        ]
+        if not candidates:
+            raise RuntimeError("没有找到可见的微信窗口")
+        target = max(candidates, key=lambda item: item[Quartz.kCGWindowBounds]["Width"] * item[Quartz.kCGWindowBounds]["Height"])
+        image = Quartz.CGWindowListCreateImage(
+            Quartz.CGRectNull,
+            Quartz.kCGWindowListOptionIncludingWindow,
+            int(target[Quartz.kCGWindowNumber]),
             Quartz.kCGWindowImageDefault,
         )
         bitmap = AppKit.NSBitmapImageRep.alloc().initWithCGImage_(image)
@@ -132,6 +156,7 @@ class NativeMacObserver:
         import Quartz
         event = Quartz.CGEventCreateScrollWheelEvent(None, Quartz.kCGScrollEventUnitPixel, 1, -700)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, event)
+        time.sleep(0.8)
 
     def open_next(self) -> None:
         return None

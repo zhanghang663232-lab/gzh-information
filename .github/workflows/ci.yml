@@ -18,7 +18,7 @@ jobs:
     runs-on: macos-14
     steps:
       - uses: actions/checkout@v4
-      - run: ditto -c -k --sequesterRsrc --keepParent . gzh-information-${{ github.ref_name }}-arm64.zip
+      - run: git archive --format=zip --output=gzh-information-${{ github.ref_name }}-arm64.zip HEAD
       - uses: actions/upload-artifact@v4
         with:
           name: gzh-information-${{ github.ref_name }}-arm64

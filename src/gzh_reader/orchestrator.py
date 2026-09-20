@@ -8,6 +8,8 @@ import uuid
 from collections.abc import Callable
 from pathlib import Path
 
+from .agent import AgentState
+from .agent_discovery import discover_articles_with_mac_agent
 from .audit import audit_workspace
 from .capture import capture_session
 from .comments import CommentsFetcher
@@ -15,8 +17,9 @@ from .content import ContentFetcher
 from .exporter import ExporterListProvider
 from .exports import export_all
 from .metrics import MetricsFetcher
-from .models import ContentSnapshot, MetricSnapshot, Status, utc_now
+from .models import Account, ContentSnapshot, MetricSnapshot, Status, utc_now
 from .storage import Store
+from .urls import parse_biz
 from .workspace import Workspace
 
 Progress = Callable[[str, dict], None]
@@ -32,18 +35,36 @@ class Collector:
 
     def collect(self, url: str, output: Path, api_key: str, *, with_engagement: bool = False,
                 proxy_consent: bool = False) -> Path:
-        if not api_key:
-            raise ValueError("首次枚举完整历史文章需要导出服务 API key")
-        with tempfile.TemporaryDirectory(prefix="gzh-resolve-") as temp:
-            temp_root = Path(temp)
-            provider = ExporterListProvider(
-                api_key, Store(temp_root / "resolve.sqlite3"), temp_root / "raw"
+        provider = None
+        resolution_error = None
+        if api_key:
+            try:
+                with tempfile.TemporaryDirectory(prefix="gzh-resolve-") as temp:
+                    temp_root = Path(temp)
+                    provider = ExporterListProvider(
+                        api_key, Store(temp_root / "resolve.sqlite3"), temp_root / "raw"
+                    )
+                    account = provider.resolve_account(url)
+            except (PermissionError, RuntimeError, ValueError) as exc:
+                resolution_error = exc
+                provider = None
+        if provider is None:
+            biz = parse_biz(url)
+            if not biz:
+                if resolution_error:
+                    raise resolution_error
+                raise ValueError("短链接需要有效的导出服务 API key 才能识别公众号")
+            if not proxy_consent:
+                detail = f"（{resolution_error}）" if resolution_error else ""
+                raise RuntimeError(f"导出服务不可用{detail}；启用 Mac Agent 兜底需要明确同意临时系统代理")
+            account = Account(
+                biz=biz, name=biz, source_url=url, source="mac_agent", status=Status.PENDING,
             )
-            account = provider.resolve_account(url)
         bootstrap = Workspace.create(output, account.name)
         store = Store(bootstrap.database)
-        provider.store = store
-        provider.raw_dir = bootstrap.root / "raw" / "lists"
+        if provider is not None:
+            provider.store = store
+            provider.raw_dir = bootstrap.root / "raw" / "lists"
         store.upsert_account(account)
         run_id = str(uuid.uuid4())
         with store.connect() as db:
@@ -51,9 +72,34 @@ class Collector:
                        (run_id, account.biz, utc_now(), "", "list", Status.PENDING.value, "{}"))
         try:
             self.progress("list", {"message": "正在枚举历史文章"})
-            for article in provider.enumerate_articles(account):
-                store.upsert_article(article)
-            self._content(store, bootstrap, provider)
+            used_provider = provider
+            if provider is not None:
+                try:
+                    for article in provider.enumerate_articles(account):
+                        store.upsert_article(article)
+                except (PermissionError, RuntimeError, ValueError):
+                    used_provider = None
+            if used_provider is None:
+                if not proxy_consent:
+                    raise RuntimeError("导出服务列表失败；Mac Agent 兜底需要明确同意临时系统代理")
+                self.progress("agent_list", {
+                    "message": "请把 Mac 微信打开到目标公众号历史消息页；Agent 将自动滚动并只接收真实 URL",
+                })
+                articles, state = discover_articles_with_mac_agent(
+                    bootstrap, account, consent=proxy_consent,
+                )
+                for article in articles:
+                    store.upsert_article(article)
+                fingerprint = hashlib.sha256(
+                    "\n".join(item.url for item in articles).encode()
+                ).hexdigest()
+                store.set_checkpoint(
+                    "mac_agent", account.biz, str(len(articles)), fingerprint,
+                    state == AgentState.COMPLETE,
+                )
+                if not articles:
+                    raise RuntimeError("Mac Agent 未捕获到文章 URL；请确认微信位于目标公众号历史消息页")
+            self._content(store, bootstrap, used_provider)
             if with_engagement:
                 self._engagement(store, bootstrap, account.biz, proxy_consent)
             self.progress("export", {"message": "正在生成数据包"})
