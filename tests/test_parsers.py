@@ -1,7 +1,7 @@
 import json
 
 from gzh_reader.comments import extract_comment_context, parse_comment_page
-from gzh_reader.content import ContentFetcher, classify_page
+from gzh_reader.content import ContentFetcher, classify_page, extract_account_name
 from gzh_reader.metrics import MetricsFetcher, parse_metrics
 from gzh_reader.models import ArticleSeed, CaptureSession, Status
 
@@ -37,6 +37,16 @@ def test_content_parser_extracts_body_and_assets():
     item = ContentFetcher().parse_content(article, html)
     assert item.status == Status.OK and "正文" in item.markdown
     assert item.assets == ["https://img/x.jpg"]
+
+
+def test_exported_html_title_author_and_account_name():
+    article = ArticleSeed(stable_key="url:x", url="https://x", biz="b")
+    html = """<h1 id="activity-name"><span class="js_title_inner">标题</span></h1>
+    <span id="js_author_name">作者</span><a id="js_name">公众号名</a>
+    <div id="js_content"><p>正文</p></div>"""
+    item = ContentFetcher().parse_content(article, html)
+    assert item.title == "标题" and item.author == "作者"
+    assert extract_account_name(html) == "公众号名"
 
 
 def test_cross_account_credential_rejected_without_request():

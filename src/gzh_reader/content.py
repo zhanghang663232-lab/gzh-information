@@ -59,6 +59,10 @@ def classify_page(html: str, status_code: int = 200) -> tuple[Status, str]:
     return Status.OK, ""
 
 
+def extract_account_name(html: str) -> str:
+    return _value(html, [r'id=["\']js_name["\'][^>]*>\s*(.*?)\s*</a>'])
+
+
 class ContentFetcher:
     def __init__(self, http: HttpClient | None = None):
         self.http = http or HttpClient()
@@ -76,8 +80,15 @@ class ContentFetcher:
                                    status=status, reason=reason)
         parser = _TextParser()
         parser.feed(html)
-        title = _value(html, [r"var\s+msg_title\s*=\s*['\"](.*?)['\"]", r"<title>(.*?)</title>"])
-        author = _value(html, [r"var\s+nickname\s*=\s*['\"](.*?)['\"]", r'id="js_name"[^>]*>(.*?)<'])
+        title = _value(html, [
+            r"var\s+msg_title\s*=\s*['\"](.*?)['\"]",
+            r'class=["\']js_title_inner["\'][^>]*>(.*?)</span>',
+            r"<title>(.*?)</title>",
+        ])
+        author = _value(html, [
+            r'id=["\']js_author_name["\'][^>]*>(.*?)</span>',
+            r"var\s+nickname\s*=\s*['\"](.*?)['\"]",
+        ])
         published = _value(html, [r"var\s+ct\s*=\s*['\"]?(\d+)", r'id="publish_time"[^>]*>(.*?)<'])
         cover = _value(html, [r"var\s+msg_cdn_url\s*=\s*['\"](.*?)['\"]"])
         markdown = re.sub(r"\n{3,}", "\n\n", "".join(parser.parts)).strip()

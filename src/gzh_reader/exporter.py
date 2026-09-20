@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import hashlib
 import json
+import time
 from collections.abc import Iterator
 from pathlib import Path
 from urllib.parse import quote, urlencode
@@ -25,21 +26,33 @@ class ExporterListProvider:
 
     def _json(self, endpoint: str, params: dict[str, str]) -> dict:
         url = f"{self.base_url}{endpoint}?{urlencode(params)}"
-        response = self.http.request(url, headers={"X-Auth-Key": self._key})
-        if response.status in (401, 403):
-            raise PermissionError("导出服务 API key 无效或已过期")
-        if response.status == 429:
-            raise RuntimeError("导出服务限流")
-        if response.status >= 400:
-            raise RuntimeError(f"导出服务 HTTP {response.status}")
-        payload = response.json()
-        if payload.get("code") == -1:
-            raise PermissionError("导出服务 API key 无效或已过期")
-        return payload
+        for attempt in range(4):
+            response = self.http.request(url, headers={"X-Auth-Key": self._key})
+            if response.status in (401, 403):
+                raise PermissionError("导出服务 API key 无效或已过期")
+            if response.status == 429:
+                raise RuntimeError("导出服务限流")
+            if response.status >= 400:
+                raise RuntimeError(f"导出服务 HTTP {response.status}")
+            payload = response.json()
+            code = payload.get("code")
+            base_code = (payload.get("base_resp") or {}).get("ret")
+            if code == -1:
+                raise PermissionError("导出服务 API key 无效或已过期")
+            if code != 200003 and base_code != 200003:
+                return payload
+            if attempt < 3:
+                time.sleep(min(attempt + 1, 3))
+        raise RuntimeError("导出服务会话连续返回 200003")
 
     def resolve_account(self, url: str) -> Account:
         normalized = normalize_url(url)
         biz = parse_biz(normalized)
+        if biz:
+            return Account(
+                biz=biz, fakeid=biz, name=biz,
+                source_url=normalized, source="url", status=Status.OK,
+            )
         payload = self._json("/api/public/v1/accountbyurl", {"url": url})
         data = payload.get("data", payload)
         if isinstance(data, list):
@@ -90,11 +103,9 @@ class ExporterListProvider:
                 )
             current = int(cursor or 0)
             explicit_next = data.get("next") or data.get("next_begin")
-            next_cursor = str(explicit_next if explicit_next is not None else current + len(items))
-            total = data.get("total") or data.get("total_count")
+            next_cursor = str(explicit_next if explicit_next is not None else current + 20)
             completed = bool(
-                data.get("is_end") or data.get("completed") or not items or len(items) < 20
-                or (total is not None and current + len(items) >= int(total))
+                data.get("is_end") or data.get("completed") or not items
             )
             self.store.set_checkpoint("exporter", account.biz, next_cursor, fingerprint, completed)
             if completed:
@@ -103,7 +114,7 @@ class ExporterListProvider:
 
     def download_article(self, url: str, format: str = "html") -> bytes:
         endpoint = f"{self.base_url}/api/public/v1/download?{urlencode({'url': url, 'format': format})}"
-        response = self.http.request(endpoint, headers={"X-Auth-Key": self._key})
+        response = self.http.request(endpoint)
         if response.status >= 400:
             raise RuntimeError(f"导出服务下载端点 HTTP {response.status}")
         return response.body

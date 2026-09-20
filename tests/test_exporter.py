@@ -30,9 +30,17 @@ class RecordingHttp(FakeHttp):
 def test_accountbyurl_resolves_fakeid_and_official_base(tmp_path: Path):
     http = RecordingHttp([{"data": {"biz": "b", "fakeid": "f", "nickname": "账号"}}])
     provider = ExporterListProvider("secret", Store(tmp_path / "db.sqlite3"), tmp_path / "raw", http)
-    account = provider.resolve_account("https://mp.weixin.qq.com/s?__biz=b&mid=1&idx=1")
+    account = provider.resolve_account("https://mp.weixin.qq.com/s/short-token")
     assert account.fakeid == "f" and account.name == "账号"
     assert http.calls[0][0].startswith("https://down.mptext.top/api/public/v1/accountbyurl")
+
+
+def test_full_url_uses_biz_as_fakeid_without_accountbyurl(tmp_path: Path):
+    http = RecordingHttp([])
+    provider = ExporterListProvider("secret", Store(tmp_path / "db.sqlite3"), tmp_path / "raw", http)
+    account = provider.resolve_account("https://mp.weixin.qq.com/s?__biz=b&mid=1&idx=1")
+    assert account.biz == "b" and account.fakeid == "b"
+    assert http.calls == []
 
 
 def test_pagination_completion(tmp_path: Path):
