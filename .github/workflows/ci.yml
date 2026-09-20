@@ -1,0 +1,25 @@
+name: CI
+on:
+  push:
+  pull_request:
+jobs:
+  test:
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - uses: astral-sh/setup-uv@v5
+        with:
+          python-version: "3.12"
+      - run: uv sync --extra dev
+      - run: uv run pytest -q
+  apple-silicon-bundle:
+    if: startsWith(github.ref, 'refs/tags/v')
+    needs: test
+    runs-on: macos-14
+    steps:
+      - uses: actions/checkout@v4
+      - run: ditto -c -k --sequesterRsrc --keepParent . gzh-information-${{ github.ref_name }}-arm64.zip
+      - uses: actions/upload-artifact@v4
+        with:
+          name: gzh-information-${{ github.ref_name }}-arm64
+          path: gzh-information-${{ github.ref_name }}-arm64.zip

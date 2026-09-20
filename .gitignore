@@ -1,0 +1,24 @@
+.DS_Store
+.venv/
+__pycache__/
+.pytest_cache/
+.ruff_cache/
+*.py[cod]
+dist/
+build/
+*.egg-info/
+
+# Runtime data and secrets never belong in Git.
+gzh-information-data/
+runtime/
+raw/
+database/
+exports/
+obsidian/
+audit/
+*.sqlite3
+*.db
+*credential*
+*cookie*
+*proxy-state*
+.env
