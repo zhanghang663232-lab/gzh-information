@@ -8,7 +8,6 @@ from pathlib import Path
 
 from .audit import audit_workspace
 from .exports import export_all
-from .orchestrator import Collector
 from .proxy import MacProxyManager
 from .storage import Store
 from .workspace import Workspace
@@ -24,14 +23,9 @@ def build_parser() -> argparse.ArgumentParser:
     collect = sub.add_parser("collect")
     collect.add_argument("--url", required=True)
     collect.add_argument("--output", type=Path, default=Path.home() / "Documents" / "gzh-information-data")
-    collect.add_argument("--api-key", help="不推荐：会进入 shell 历史；省略后从隐藏输入读取")
-    collect.add_argument("--engagement", action="store_true")
-    collect.add_argument("--allow-system-proxy", action="store_true")
+    collect.add_argument("--max-articles", type=int, help=argparse.SUPPRESS)
     resume = sub.add_parser("resume")
     resume.add_argument("--workspace", required=True, type=Path)
-    resume.add_argument("--api-key", help="省略后从隐藏输入读取")
-    resume.add_argument("--engagement", action="store_true")
-    resume.add_argument("--allow-system-proxy", action="store_true")
     for name in ("audit", "export"):
         command = sub.add_parser(name)
         command.add_argument("--workspace", required=True, type=Path)
@@ -49,27 +43,42 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     args = build_parser().parse_args(argv)
     if args.command == "collect":
-        import getpass
-        key = args.api_key or getpass.getpass("导出服务 API key（不会保存）: ")
-        path = Collector(_progress).collect(args.url, args.output, key,
-            with_engagement=args.engagement, proxy_consent=args.allow_system_proxy)
+        from .human_agent import MacHumanAccountCollector
+
+        path = MacHumanAccountCollector(_progress).collect(
+            args.url, args.output, max_articles=args.max_articles,
+        )
         print(path)
     elif args.command == "resume":
-        import getpass
-        key = args.api_key or getpass.getpass("导出服务 API key（不会保存）: ")
-        Collector(_progress).resume(args.workspace, key, with_engagement=args.engagement,
-                                    proxy_consent=args.allow_system_proxy)
+        from .human_agent import MacHumanAccountCollector
+
+        ws = Workspace.open(args.workspace)
+        accounts = Store(ws.database).rows("SELECT source_url FROM accounts LIMIT 1")
+        if not accounts or not accounts[0]["source_url"]:
+            raise RuntimeError("工作区没有保存起始文章链接")
+        MacHumanAccountCollector(_progress).collect(
+            accounts[0]["source_url"], ws.root.parent,
+        )
     elif args.command in {"audit", "export"}:
         ws = Workspace.open(args.workspace)
         store = Store(ws.database)
         value = audit_workspace(store, ws.root) if args.command == "audit" else export_all(store, ws.root)
         print(json.dumps(value, ensure_ascii=False, indent=2))
     elif args.command == "doctor":
+        try:
+            import ApplicationServices
+            import Quartz
+
+            accessibility = bool(ApplicationServices.AXIsProcessTrusted())
+            screen_capture = bool(Quartz.CGPreflightScreenCaptureAccess())
+        except ImportError:
+            accessibility = False
+            screen_capture = False
         checks = {
             "macOS": platform.system() == "Darwin",
-            "networksetup": bool(shutil.which("networksetup")),
-            "mitmdump": bool(shutil.which("mitmdump")),
-            "mitm_ca_generated": (Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem").exists(),
+            "WeChat": bool(shutil.which("open")),
+            "accessibility_permission": accessibility,
+            "screen_recording_permission": screen_capture,
             "python_3_12_plus": tuple(map(int, platform.python_version_tuple()[:2])) >= (3, 12),
         }
         print(json.dumps(checks, ensure_ascii=False, indent=2))

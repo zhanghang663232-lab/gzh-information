@@ -1,9 +1,6 @@
 from __future__ import annotations
 
-import shutil
-import subprocess
 import threading
-import time
 import webbrowser
 from pathlib import Path
 
@@ -11,7 +8,7 @@ from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
 from pydantic import BaseModel
 
-from .orchestrator import Collector
+from .human_agent import MacHumanAccountCollector
 
 app = FastAPI(title="gzh-information", docs_url=None, redoc_url=None)
 STATE: dict = {"stage": "idle", "detail": {}, "running": False}
@@ -20,9 +17,7 @@ STATE: dict = {"stage": "idle", "detail": {}, "running": False}
 class CollectRequest(BaseModel):
     url: str
     output: str = str(Path.home() / "Documents" / "gzh-information-data")
-    api_key: str
-    engagement: bool = True
-    proxy_consent: bool = False
+    foreground_consent: bool = False
 
 
 HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -33,15 +28,11 @@ h1{margin-top:0}label{display:block;margin:18px 0 7px;font-weight:650}input[type
 .check{font-weight:400}.warning{background:#fff8e3;padding:14px;border-radius:10px;margin-top:18px}button{margin-top:22px;background:#137c45;color:white;border:0;border-radius:11px;padding:14px 22px;font-size:16px;cursor:pointer}button:disabled{opacity:.5}#status{margin-top:24px;white-space:pre-wrap;background:#eff7f1;padding:16px;border-radius:10px}</style></head>
 <body><main><h1>公众号全量读取</h1><p>粘贴目标公众号任意一篇文章。系统会保存证据、断点和缺失原因，不会把不可得数据伪装成成功。</p>
 <label>文章链接</label><input id="url" type="text" placeholder="https://mp.weixin.qq.com/s?...">
-<label>导出服务 API key（仅保存在本次内存）</label><input id="key" type="password" autocomplete="off">
 <label>输出目录</label><input id="output" type="text" value="__OUTPUT__">
-<label class="check"><input id="engagement" type="checkbox" checked> 采集阅读、点赞、在看、转发、评论</label>
-<div class="warning"><label class="check"><input id="consent" type="checkbox"> 我理解并同意本轮临时切换 Mac 系统代理；程序会保存并恢复现有 HTTP、HTTPS、SOCKS 设置。首次需按说明信任本地 CA。</label></div>
-<button id="ca">首次使用：准备并打开 CA 证书</button>
+<div class="warning"><label class="check"><input id="consent" type="checkbox"> 我知道读取期间 Agent 会操作桌面微信窗口；请在暂时不用电脑时开始。程序不安装证书、不切换代理，也不调用第三方导出服务。</label></div>
 <button id="start">开始/继续</button><div id="status">等待开始</div></main>
 <script>const q=x=>document.querySelector(x),btn=q('#start'),status=q('#status');
-q('#ca').onclick=async()=>{status.textContent='正在准备本地证书…';let r=await fetch('/api/prepare-ca',{method:'POST'});status.textContent=JSON.stringify(await r.json(),null,2)};
-btn.onclick=async()=>{btn.disabled=true;const body={url:q('#url').value,api_key:q('#key').value,output:q('#output').value,engagement:q('#engagement').checked,proxy_consent:q('#consent').checked};
+btn.onclick=async()=>{btn.disabled=true;const body={url:q('#url').value,output:q('#output').value,foreground_consent:q('#consent').checked};
 let r=await fetch('/api/collect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!r.ok){status.textContent=await r.text();btn.disabled=false;return}poll()};
 async function poll(){let s=await (await fetch('/api/status')).json();status.textContent=JSON.stringify(s,null,2);if(s.running)setTimeout(poll,900);else btn.disabled=false}</script></body></html>"""
 
@@ -56,39 +47,20 @@ def status() -> dict:
     return STATE
 
 
-@app.post("/api/prepare-ca")
-def prepare_ca() -> dict:
-    mitmdump = shutil.which("mitmdump")
-    if not mitmdump:
-        raise HTTPException(400, "未安装 mitmproxy；请先双击 安装.command")
-    process = subprocess.Popen(
-        [mitmdump, "--listen-host", "127.0.0.1", "--listen-port", "0"],
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    )
-    time.sleep(1.5)
-    process.terminate()
-    ca = Path.home() / ".mitmproxy" / "mitmproxy-ca-cert.pem"
-    if not ca.exists():
-        raise HTTPException(500, "证书生成失败，请运行 gzh-reader doctor")
-    subprocess.Popen(["open", str(ca)], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-    return {"ok": True, "next": "请在钥匙串窗口中添加证书并设为始终信任，然后回到本页勾选代理确认。"}
-
-
 @app.post("/api/collect")
 def collect(request: CollectRequest) -> dict:
     if STATE["running"]:
         raise HTTPException(409, "已有任务正在运行")
-    if request.engagement and not request.proxy_consent:
-        raise HTTPException(400, "采集互动数据必须明确同意临时切换系统代理")
+    if not request.foreground_consent:
+        raise HTTPException(400, "桌面模拟需要临时操作可见的微信窗口，请先勾选确认")
     STATE.update({"stage": "starting", "detail": {}, "running": True})
 
     def run() -> None:
         def progress(stage: str, detail: dict) -> None:
             STATE.update({"stage": stage, "detail": detail, "running": stage != "complete"})
         try:
-            workspace = Collector(progress).collect(
-                request.url, Path(request.output), request.api_key,
-                with_engagement=request.engagement, proxy_consent=request.proxy_consent,
+            workspace = MacHumanAccountCollector(progress).collect(
+                request.url, Path(request.output),
             )
             STATE.update({"stage": "complete", "detail": {"workspace": str(workspace)}, "running": False})
         except Exception as exc:  # noqa: BLE001 - background-task boundary reports failures to UI
