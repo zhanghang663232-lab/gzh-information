@@ -26,12 +26,12 @@ def test_resume_uses_matching_human_account_and_current_profile(monkeypatch, tmp
         def __init__(self, progress):
             self.progress = progress
 
-        def collect(self, url, output, *, account_name, max_articles):
-            calls.append((url, output, account_name, max_articles))
+        def collect(self, url, output, *, account_name, max_articles, max_new_articles):
+            calls.append((url, output, account_name, max_articles, max_new_articles))
 
     monkeypatch.setattr("gzh_reader.human_agent.MacHumanAccountCollector", FakeCollector)
     assert main(["resume", "--workspace", str(ws.root), "--max-articles", "20"]) == 0
-    assert calls == [(sample, ws.root.parent, "监所家属", 20)]
+    assert calls == [(sample, ws.root.parent, "监所家属", 20, 5)]
 
 
 def test_resume_rejects_ambiguous_human_accounts(tmp_path: Path):
