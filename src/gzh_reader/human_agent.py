@@ -14,7 +14,7 @@ from typing import TYPE_CHECKING
 
 from .audit import audit_workspace
 from .exports import export_all
-from .models import Account, ArticleSeed, ContentSnapshot, MetricSnapshot, Status
+from .models import Account, ArticleSeed, ContentSnapshot, MetricSnapshot, Status, utc_now
 from .storage import Store
 from .urls import article_stable_key, normalize_url
 from .workspace import Workspace
@@ -585,6 +585,7 @@ class MacHumanAccountCollector:
         self.progress = progress
         self.controller = controller or MacHumanController()
         self.reviewer = reviewer
+        self.action: Callable[[str], None] = lambda stage: None
 
     @staticmethod
     def _target_count(lines: list[OcrLine]) -> int | None:
@@ -606,12 +607,17 @@ class MacHumanAccountCollector:
     def _capture_card(
         self, profile: Window, card: ProfileCard, expected_account: str
     ) -> HumanCapture:
+        self.action("before_click_card")
         self.controller.click(profile.x + card.click_x, profile.y + card.click_y)
         self.controller.wait_window("微信 (窗口)", timeout=7)
+        self.action("article_window_open")
         time.sleep(0.5)
         try:
+            self.action("before_copy_link")
             url = self.controller.copy_link()
+            self.action("before_copy_body")
             body = self.controller.copy_page_text()
+            self.action("before_page_bottom")
             bottom = self.controller.page_bottom()
             if not article_matches_account(bottom, expected_account):
                 raise AccountMismatchError(
@@ -633,7 +639,9 @@ class MacHumanAccountCollector:
                 share_num=parse_share_num(bottom), comment_num=comment_num,
             )
         finally:
+            self.action("before_close_article")
             self.controller.close_article()
+            self.action("article_window_closed")
             try:
                 self.controller.focus_profile()
             except RuntimeError:
@@ -742,6 +750,19 @@ class MacHumanAccountCollector:
         consecutive_failures = 0
         last_open_at = 0.0
         max_open_attempts = 3 * max_new_articles
+        action_trace: list[dict] = []
+
+        def record_action(stage: str) -> None:
+            action_trace.append({
+                "at": utc_now(), "stage": stage,
+                "opens_in_run": attempts, "new_in_run": new_in_run,
+            })
+            del action_trace[:-40]
+            ws.write_json("audit/human-agent-action-trace.json", {
+                "account": account_name, "events": action_trace,
+            })
+
+        self.action = record_action
         identity_recoveries = 0
         stop_reason = "viewport_repeated_without_new_articles"
         halt = False
@@ -864,6 +885,7 @@ class MacHumanAccountCollector:
                     break
                 except (RuntimeError, OSError, ValueError) as exc:
                     consecutive_failures += 1
+                    record_action("article_error")
                     self.progress("human_retry", {
                         "title": card.title,
                         "error": f"{type(exc).__name__}: {exc}",
@@ -946,6 +968,7 @@ class MacHumanAccountCollector:
             if restart_profile:
                 continue
             try:
+                record_action("before_scroll")
                 scrolled = self.controller.scroll()
             except RuntimeError as exc:
                 stop_reason = "wechat_session_unavailable"
