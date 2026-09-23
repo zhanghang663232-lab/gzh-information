@@ -1,15 +1,15 @@
 # gzh-information v2
 
-面向 Apple Silicon Mac 的微信公众号公开数据归档系统。用户粘贴目标公众号任意一篇文章链接，程序会枚举可发现的历史文章，保存正文、采集时互动快照、普通用户可见评论，并输出可审计的数据包。
+面向 Apple Silicon Mac 的微信公众号公开数据归档原型。当前先验证桌面微信界面采集：打开目标账号主页、试跑固定篇数、审计结果，再从同一工作区续采。文章正文和可见互动字段分别记账；缺失字段保持未知。
 
 > 当前为 v2 alpha。原有脚本保留在 `wechat-archive/`，作为 legacy 流程继续存在一个版本周期。v2 是独立 clean-room 实现，没有复制 `Access_wechat_article` 的 CC BY-NC-SA 源码。
 
 ## 它是什么
 
-它是 `Access_wechat_article` 思路的 Mac clean-room 重写：只操作用户已经登录的桌面微信，不依赖公众号后台、第三方导出网站、搜索引擎、代理、抓包或本地 CA。
+它是参考 `Access_wechat_article` 操作思路的 Mac clean-room 实现。当前默认入口操作用户已经登录的桌面微信，不依赖公众号后台、第三方导出网站、代理、抓包或本地 CA。
 
 ```text
-一篇文章链接
+在微信打开目标文章，进入账号主页；填写链接和账号名称
    ↓
 在桌面微信打开文章并进入公众号主页
    ↓
@@ -17,7 +17,7 @@ Vision OCR 识别历史文章卡片，Quartz 模拟点击与滚动
    ↓
 从微信内置浏览器复制真实链接与完整渲染文本
    ↓
-读取主页/文章底部公开显示的阅读、点赞、转发与评论状态
+读取主页/文章底部公开显示的互动字段
    ↓
 SQLite 合并、续传、覆盖率审计、JSONL/CSV/Markdown/Obsidian 导出
 ```
@@ -26,20 +26,21 @@ SQLite 合并、续传、覆盖率审计、JSONL/CSV/Markdown/Obsidian 导出
 
 ## 双击使用（Mac）
 
-1. 下载仓库或 Release 压缩包。
-2. 双击 `安装.command`，首次安装依赖。
-3. 双击 `启动.command`，浏览器会打开中文向导。
-4. 粘贴文章链接，选择输出目录。
-5. 暂时不用电脑时，勾选“允许 Agent 操作桌面微信”并开始。
+1. 下载仓库或 Release 压缩包，双击 `安装.command`。
+2. 在 Mac 微信中打开目标文章，点击公众号名称进入账号主页；核对主页名称。
+3. 双击 `启动.command`，在中文向导中填写文章链接、主页名称和输出目录。
+4. 保留默认的“最多保存 20 篇”进行试跑，勾选桌面操作确认并开始。
+5. 查看工作区 `audit/coverage.json`。试跑确认后可用下方 `resume` 命令继续读取。
 
 程序不会读取或保存 Cookie、Credential、API key，也不会修改 HTTP、HTTPS 或 SOCKS 代理。
 
-由于这是“模拟真人操作”的桌面 Agent，运行时微信窗口必须可见，并会被自动点击、滚动和切换。macOS 不允许它在同一桌面上既完成真实 GUI 操作又完全不影响用户前台工作；如果不希望窗口弹出，请先暂停任务，等到电脑空闲时再继续。
+由于这是“模拟真人操作”的桌面 Agent，当前宿主机模式需要微信窗口可见。不打扰宿主机的目标方案是在独立 macOS VM 中运行微信与 Agent；设计与安全边界见 [后台 Agent 路线](docs/background-agent.md)。
 
 ## 命令行
 
 ```bash
-gzh-reader collect --url '<公众号文章链接>' --output '<目录>'
+gzh-reader collect --url '<公众号文章链接>' --account-name '<微信主页名称>' --max-articles 20 --output '<目录>'
+gzh-reader resume --workspace '<已有账号目录>' --max-articles 40
 gzh-reader resume --workspace '<已有账号目录>'
 gzh-reader audit --workspace '<账号目录>'
 gzh-reader export --workspace '<账号目录>' --format all
@@ -47,7 +48,9 @@ gzh-reader doctor
 gzh-reader proxy restore --state '<proxy-state.json>'
 ```
 
-命令不需要 API key、代理参数或证书。首次运行需在 macOS 系统设置中允许终端/应用使用“辅助功能”和“屏幕录制”。
+这些桌面微信命令不需要 API key、代理参数或证书。首次运行需在 macOS 系统设置中允许终端/应用使用“辅助功能”和“屏幕录制”。`--max-articles` 是工作区内累计保存的文章上限；省略后继续读取。试跑和续采都要求微信客户端保持可见。
+
+[实机试跑记录与下一阶段门槛](docs/mac-ui-poc.md)
 
 ## 数据包
 
@@ -68,11 +71,15 @@ gzh-reader proxy restore --state '<proxy-state.json>'
 - 可访问正文覆盖率目标：≥95%。
 - `readNum`、`likeNum`、`oldLikeNum`、`shareNum`、`commentNum` 各自覆盖率目标：≥98%。
 - 数字 `0` 原样保存；`100001` 原样标记为平台返回的封顶值，不自行推算。
-- Mac Agent 兜底通道只有在出现可验证的列表末尾时才标记完整，否则明确输出 `list_incomplete`。
+- 桌面 Agent 只有在出现可验证的列表末尾时才标记完整；主页显示的“原创内容”数量本身不是完整性证明。
 
 ## 当前边界
 
 - 微信不同版本的界面坐标、OCR 结果和文章卡片布局可能变化；状态机保留失败项并可从断点重试。
+- 每个列表视口和每篇文章都强制校验目标公众号名称；发现串号立即拒绝入库并从样例链接恢复。
+- 当前实机试跑验证了链接、正文、阅读数和点赞数采集。`oldLikeNum`、转发数、评论数及评论明细尚未达到完整覆盖率；不应把试跑数据称作账号全量数据。
+- 首次试跑需要人在微信中打开目标账号主页，并填写主页名称。只粘贴链接就自动导航到主页仍是后续工作。
+- 长批次曾在微信 OCR/窗口操作阶段停滞；批量运行前还需加入超时和恢复机制。
 - 普通用户看不到的后台私有评论、已删除内容和未公开互动数据无法获取；程序不会伪造。
 - 桌面微信必须可见。为了不打扰前台工作，建议在电脑空闲时运行；任务可中断并从 SQLite 断点恢复。
 - Release 构建目前生成 Apple Silicon 可双击源码包，尚未进行 Apple Developer 签名/公证。
@@ -85,4 +92,3 @@ uv run pytest -q
 ```
 
 MIT License。仅用于归档公开可见数据；使用者需遵守平台规则、适用法律和合理速率限制。
-
