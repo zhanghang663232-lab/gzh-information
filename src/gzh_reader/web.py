@@ -6,7 +6,7 @@ from pathlib import Path
 
 from fastapi import FastAPI, HTTPException
 from fastapi.responses import HTMLResponse
-from pydantic import BaseModel
+from pydantic import BaseModel, Field
 
 from .human_agent import MacHumanAccountCollector
 
@@ -18,7 +18,8 @@ class CollectRequest(BaseModel):
     url: str
     output: str = str(Path.home() / "Documents" / "gzh-information-data")
     account_name: str | None = None
-    max_articles: int | None = 20
+    max_articles: int | None = None
+    max_new_articles: int = Field(default=5, ge=1, le=10)
     foreground_consent: bool = False
     deepseek_review: bool = False
     deepseek_api_key: str | None = None
@@ -37,7 +38,8 @@ h1{margin-top:0}label{display:block;margin:18px 0 7px;font-weight:650}input[type
 <body><main><h1>公众号读取试跑</h1><p>先在 Mac 微信打开目标公众号主页，核对名称；试跑通过后可以从同一工作区续采。</p>
 <label>文章链接</label><input id="url" type="text" placeholder="https://mp.weixin.qq.com/s?...">
 <label>公众号名称（与微信主页一致）</label><input id="account_name" type="text" placeholder="例如：监所家属">
-<label>最多保存篇数（留空为持续读取）</label><input id="max_articles" type="number" min="1" value="20">
+<label>工作区累计保存上限（可留空）</label><input id="max_articles" type="number" min="1" placeholder="留空；每轮仍受下面的新增上限保护">
+<label>本轮最多新增篇数（1-10，建议 5）</label><input id="max_new_articles" type="number" min="1" max="10" value="5">
 <label>输出目录</label><input id="output" type="text" value="__OUTPUT__">
 <label class="check"><input id="deepseek_review" type="checkbox"> OCR 无法识别文章卡片时，最多调用 DeepSeek 5 次复核公开列表文字（不发送正文或截图）</label>
 <label>DeepSeek API key（仅本次使用，不保存）</label><input id="deepseek_key" type="password" autocomplete="off" placeholder="可留空并使用 DEEPSEEK_API_KEY 环境变量">
@@ -46,7 +48,7 @@ h1{margin-top:0}label{display:block;margin:18px 0 7px;font-weight:650}input[type
 <button id="start">开始/继续</button><div id="status">等待开始</div></main>
 <script>const q=x=>document.querySelector(x),btn=q('#start'),status=q('#status');
 q('#test_model').onclick=async()=>{q('#model_status').textContent='正在测试…';let r=await fetch('/api/model/test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({deepseek_api_key:q('#deepseek_key').value||null})});q('#model_status').textContent=r.ok?'连接成功':('连接失败：'+await r.text())};
-btn.onclick=async()=>{btn.disabled=true;const body={url:q('#url').value,output:q('#output').value,account_name:q('#account_name').value.trim()||null,max_articles:q('#max_articles').value?Number(q('#max_articles').value):null,foreground_consent:q('#consent').checked,deepseek_review:q('#deepseek_review').checked,deepseek_api_key:q('#deepseek_review').checked?(q('#deepseek_key').value||null):null};
+btn.onclick=async()=>{btn.disabled=true;const body={url:q('#url').value,output:q('#output').value,account_name:q('#account_name').value.trim()||null,max_articles:q('#max_articles').value?Number(q('#max_articles').value):null,max_new_articles:Number(q('#max_new_articles').value),foreground_consent:q('#consent').checked,deepseek_review:q('#deepseek_review').checked,deepseek_api_key:q('#deepseek_review').checked?(q('#deepseek_key').value||null):null};
 let r=await fetch('/api/collect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!r.ok){status.textContent=await r.text();btn.disabled=false;return}poll()};
 async function poll(){let s=await (await fetch('/api/status')).json();status.textContent=JSON.stringify(s,null,2);if(s.running)setTimeout(poll,900);else btn.disabled=false}</script></body></html>"""
 
@@ -93,6 +95,7 @@ def collect(request: CollectRequest) -> dict:
                 request.url, Path(request.output),
                 account_name=request.account_name,
                 max_articles=request.max_articles,
+                max_new_articles=request.max_new_articles,
             )
             STATE.update({"stage": "complete", "detail": {"workspace": str(workspace)}, "running": False})
         except Exception as exc:  # noqa: BLE001 - background-task boundary reports failures to UI
