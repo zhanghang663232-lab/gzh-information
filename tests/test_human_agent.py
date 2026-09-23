@@ -1,5 +1,12 @@
+import json
+import subprocess
+
+import pytest
+
 from gzh_reader.human_agent import (
+    MacHumanController,
     OcrLine,
+    Window,
     account_name_from_profile,
     article_matches_account,
     meaningful_body,
@@ -64,3 +71,32 @@ def test_url_only_clipboard_is_not_valid_article_body():
     assert not meaningful_body("https://mp.weixin.qq.com/s/example")
     assert not meaningful_body("短正文")
     assert meaningful_body("这是文章正文。" * 20)
+
+
+def test_ocr_worker_result_is_parsed_and_sorted(monkeypatch):
+    window = Window(123, "公众号", 0, 0, 400, 600, 0, 42)
+    payload = {"lines": [
+        {"text": "第二行", "x": 1, "y": 30, "width": 20, "height": 10},
+        {"text": "第一行", "x": 1, "y": 10, "width": 20, "height": 10},
+    ]}
+
+    def fake_run(args, **kwargs):
+        assert args[1:3] == ["-m", "gzh_reader.ocr_worker"]
+        assert kwargs["timeout"] == 12
+        return subprocess.CompletedProcess(args, 0, stdout=json.dumps(payload), stderr="")
+
+    monkeypatch.setattr("gzh_reader.human_agent.subprocess.run", fake_run)
+    controller = MacHumanController.__new__(MacHumanController)
+    assert [item.text for item in controller.ocr(window)] == ["第一行", "第二行"]
+
+
+def test_ocr_worker_timeout_is_a_recoverable_error(monkeypatch):
+    window = Window(123, "公众号", 0, 0, 400, 600, 0, 42)
+
+    def timed_out(args, **kwargs):
+        raise subprocess.TimeoutExpired(args, kwargs["timeout"])
+
+    monkeypatch.setattr("gzh_reader.human_agent.subprocess.run", timed_out)
+    controller = MacHumanController.__new__(MacHumanController)
+    with pytest.raises(RuntimeError, match="OCR 超时"):
+        controller.ocr(window)
