@@ -2,11 +2,16 @@ import json
 import subprocess
 
 import pytest
+from pathlib import Path
 
 from gzh_reader.human_agent import (
+    HumanCapture,
+    MacHumanAccountCollector,
     MacHumanController,
     OcrLine,
+    ProfileCard,
     Window,
+    card_signature,
     account_name_from_profile,
     article_matches_account,
     meaningful_body,
@@ -15,7 +20,9 @@ from gzh_reader.human_agent import (
     parse_share_num,
     profile_identity_conflicts,
     profile_matches_account,
+    unique_known_cards,
 )
+from gzh_reader.storage import Store
 
 
 def line(text: str, y: float, x: float = 20) -> OcrLine:
@@ -100,3 +107,73 @@ def test_ocr_worker_timeout_is_a_recoverable_error(monkeypatch):
     controller = MacHumanController.__new__(MacHumanController)
     with pytest.raises(RuntimeError, match="OCR 超时"):
         controller.ocr(window)
+
+
+def test_close_shortcut_is_not_sent_without_verified_window_focus():
+    controller = MacHumanController.__new__(MacHumanController)
+    events = []
+    controller._raise = lambda window: False
+    controller.hotkey = lambda *args: events.append(args)
+    with pytest.raises(RuntimeError, match="已拒绝关闭快捷键"):
+        controller._close_window(Window(1, "微信 (窗口)", 0, 0, 400, 600, 0, 42))
+    assert events == []
+
+
+def test_known_card_signature_requires_unique_url():
+    rows = [
+        {"url": "u1", "title": "标题", "readNum": 10, "likeNum": 0},
+        {"url": "u2", "title": "标题", "readNum": 10, "likeNum": 0},
+        {"url": "u3", "title": "另一篇", "readNum": 20, "likeNum": 1},
+    ]
+    known = unique_known_cards(rows)
+    assert ("标题", 10, 0) not in known
+    assert known[("另一篇", 20, 1)] == "u3"
+    assert card_signature(ProfileCard("另一篇", 20, 1, 100, 200)) == ("另一篇", 20, 1)
+
+
+def test_small_batches_resume_without_reopening_known_cards(tmp_path: Path):
+    profile = Window(1, "公众号", 0, 0, 400, 600, 0, 42)
+    lines = [
+        line("监所家属", 30), line("301篇原创内容", 60),
+        line("第一篇文章", 110), line("阅读101 赞1", 155),
+        line("第二篇文章", 250), line("阅读202 赞2", 295),
+    ]
+
+    class FakeController:
+        def activate(self):
+            pass
+
+        def open_profile(self, url, account_name):
+            return profile
+
+        def scroll_to_top(self):
+            return profile
+
+        def focus_profile(self):
+            return profile
+
+        def ocr(self, window):
+            return lines
+
+        def scroll(self):
+            return False
+
+    opened = []
+    collector = MacHumanAccountCollector(controller=FakeController())
+
+    def capture(window, card, account_name):
+        opened.append(card.title)
+        return HumanCapture(
+            url="https://mp.weixin.qq.com/s/" + ("first" if card.title == "第一篇文章" else "second"),
+            title=card.title, body="这是公开文章正文。" * 30,
+            read_num=card.read_num, like_num=card.like_num,
+            share_num=None, comment_num=None,
+        )
+
+    collector._capture_card = capture
+    url = "https://mp.weixin.qq.com/s/example"
+    workspace = collector.collect(url, tmp_path, account_name="监所家属", max_new_articles=1)
+    assert opened == ["第一篇文章"]
+    collector.collect(url, tmp_path, account_name="监所家属", max_new_articles=1)
+    assert opened == ["第一篇文章", "第二篇文章"]
+    assert len(Store(workspace / "database" / "archive.sqlite3").rows("SELECT url FROM articles")) == 2
