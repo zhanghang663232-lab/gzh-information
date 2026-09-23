@@ -1,9 +1,12 @@
 from __future__ import annotations
 
 import argparse
+import getpass
 import json
+import os
 import platform
 import shutil
+import sys
 from pathlib import Path
 
 from .audit import audit_workspace
@@ -17,6 +20,20 @@ def _progress(stage: str, detail: dict) -> None:
     print(json.dumps({"stage": stage, **detail}, ensure_ascii=False))
 
 
+def _deepseek_key() -> str | None:
+    if os.environ.get("DEEPSEEK_API_KEY"):
+        return None
+    if sys.stdin.isatty():
+        return getpass.getpass("请输入 DeepSeek API key（输入隐藏且不会保存）：")
+    return None
+
+
+def _deepseek_reviewer():
+    from .deepseek import DeepSeekCardReviewer, DeepSeekClient
+
+    return DeepSeekCardReviewer(DeepSeekClient(_deepseek_key()))
+
+
 def build_parser() -> argparse.ArgumentParser:
     parser = argparse.ArgumentParser(prog="gzh-reader", description="Mac 公众号公开数据归档工具")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -25,9 +42,14 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--output", type=Path, default=Path.home() / "Documents" / "gzh-information-data")
     collect.add_argument("--account-name", help="已在微信中打开的目标公众号名称")
     collect.add_argument("--max-articles", type=int, help="试跑时最多保存的文章总数；不填则持续读取")
+    collect.add_argument("--deepseek-review", action="store_true", help="仅在文章卡片 OCR 无法解析时调用 DeepSeek；最多 5 次")
     resume = sub.add_parser("resume")
     resume.add_argument("--workspace", required=True, type=Path)
     resume.add_argument("--max-articles", type=int, help="试跑时最多保存的文章总数；不填则持续读取")
+    resume.add_argument("--deepseek-review", action="store_true", help="仅在文章卡片 OCR 无法解析时调用 DeepSeek；最多 5 次")
+    model = sub.add_parser("model", help="检查可选模型接口")
+    model.add_argument("action", choices=["test"])
+    model.add_argument("--provider", choices=["deepseek"], default="deepseek")
     for name in ("audit", "export"):
         command = sub.add_parser(name)
         command.add_argument("--workspace", required=True, type=Path)
@@ -47,7 +69,10 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "collect":
         from .human_agent import MacHumanAccountCollector
 
-        path = MacHumanAccountCollector(_progress).collect(
+        collector_options = {}
+        if args.deepseek_review:
+            collector_options["reviewer"] = _deepseek_reviewer()
+        path = MacHumanAccountCollector(_progress, **collector_options).collect(
             args.url, args.output, max_articles=args.max_articles,
             account_name=args.account_name,
         )
@@ -66,7 +91,10 @@ def main(argv: list[str] | None = None) -> int:
             or not accounts[0]["source_url"]
         ):
             raise RuntimeError("工作区没有唯一且匹配的目标公众号及起始文章链接")
-        MacHumanAccountCollector(_progress).collect(
+        collector_options = {}
+        if args.deepseek_review:
+            collector_options["reviewer"] = _deepseek_reviewer()
+        MacHumanAccountCollector(_progress, **collector_options).collect(
             accounts[0]["source_url"], ws.root.parent,
             account_name=accounts[0]["name"],
             max_articles=args.max_articles,
@@ -76,6 +104,10 @@ def main(argv: list[str] | None = None) -> int:
         store = Store(ws.database)
         value = audit_workspace(store, ws.root) if args.command == "audit" else export_all(store, ws.root)
         print(json.dumps(value, ensure_ascii=False, indent=2))
+    elif args.command == "model":
+        from .deepseek import DeepSeekClient
+
+        print(json.dumps(DeepSeekClient(_deepseek_key()).test(), ensure_ascii=False, indent=2))
     elif args.command == "doctor":
         try:
             import ApplicationServices
