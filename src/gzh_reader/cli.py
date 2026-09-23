@@ -42,10 +42,12 @@ def build_parser() -> argparse.ArgumentParser:
     collect.add_argument("--output", type=Path, default=Path.home() / "Documents" / "gzh-information-data")
     collect.add_argument("--account-name", help="已在微信中打开的目标公众号名称")
     collect.add_argument("--max-articles", type=int, help="试跑时最多保存的文章总数；不填则持续读取")
+    collect.add_argument("--max-new-articles", type=int, default=5, help="每轮最多新增 1-10 篇，默认 5 篇")
     collect.add_argument("--deepseek-review", action="store_true", help="仅在文章卡片 OCR 无法解析时调用 DeepSeek；最多 5 次")
     resume = sub.add_parser("resume")
     resume.add_argument("--workspace", required=True, type=Path)
     resume.add_argument("--max-articles", type=int, help="试跑时最多保存的文章总数；不填则持续读取")
+    resume.add_argument("--max-new-articles", type=int, default=5, help="每轮最多新增 1-10 篇，默认 5 篇")
     resume.add_argument("--deepseek-review", action="store_true", help="仅在文章卡片 OCR 无法解析时调用 DeepSeek；最多 5 次")
     model = sub.add_parser("model", help="检查可选模型接口")
     model.add_argument("action", choices=["test"])
@@ -74,7 +76,7 @@ def main(argv: list[str] | None = None) -> int:
             collector_options["reviewer"] = _deepseek_reviewer()
         path = MacHumanAccountCollector(_progress, **collector_options).collect(
             args.url, args.output, max_articles=args.max_articles,
-            account_name=args.account_name,
+            account_name=args.account_name, max_new_articles=args.max_new_articles,
         )
         print(path)
     elif args.command == "resume":
@@ -98,6 +100,7 @@ def main(argv: list[str] | None = None) -> int:
             accounts[0]["source_url"], ws.root.parent,
             account_name=accounts[0]["name"],
             max_articles=args.max_articles,
+            max_new_articles=args.max_new_articles,
         )
     elif args.command in {"audit", "export"}:
         ws = Workspace.open(args.workspace)
