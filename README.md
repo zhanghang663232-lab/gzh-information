@@ -29,7 +29,7 @@ SQLite 合并、续传、覆盖率审计、JSONL/CSV/Markdown/Obsidian 导出
 1. 下载仓库或 Release 压缩包，双击 `安装.command`。
 2. 在 Mac 微信中打开目标文章，点击公众号名称进入账号主页；核对主页名称。
 3. 双击 `启动.command`，在中文向导中填写文章链接、主页名称和输出目录。
-4. 保留默认的“最多保存 20 篇”进行试跑，勾选桌面操作确认并开始。
+4. 保留默认的“本轮最多新增 5 篇”进行试跑；“工作区累计保存上限”可留空。勾选桌面操作确认并开始。
 5. 查看工作区 `audit/coverage.json`。试跑确认后可用下方 `resume` 命令继续读取。
 
 默认采集不读取 Cookie、Credential 或 API key，也不会修改 HTTP、HTTPS 或 SOCKS 代理。可选的 DeepSeek 复核会在本次运行中读取用户输入的 API key，但不会持久化。
@@ -45,8 +45,8 @@ SQLite 合并、续传、覆盖率审计、JSONL/CSV/Markdown/Obsidian 导出
 ## 命令行
 
 ```bash
-gzh-reader collect --url '<公众号文章链接>' --account-name '<微信主页名称>' --max-articles 20 --output '<目录>'
-gzh-reader resume --workspace '<已有账号目录>' --max-articles 40
+gzh-reader collect --url '<公众号文章链接>' --account-name '<微信主页名称>' --max-new-articles 5 --output '<目录>'
+gzh-reader resume --workspace '<已有账号目录>' --max-new-articles 5
 gzh-reader resume --workspace '<已有账号目录>'
 gzh-reader audit --workspace '<账号目录>'
 gzh-reader export --workspace '<账号目录>' --format all
@@ -54,9 +54,11 @@ gzh-reader doctor
 gzh-reader proxy restore --state '<proxy-state.json>'
 ```
 
-默认桌面微信命令不需要 API key、代理参数或证书；只有显式启用 `--deepseek-review` 才需要 DeepSeek 密钥。首次运行需在 macOS 系统设置中允许终端/应用使用“辅助功能”和“屏幕录制”。`--max-articles` 是工作区内累计保存的文章上限；省略后继续读取。试跑和续采都要求微信客户端保持可见。
+默认桌面微信命令不需要 API key、代理参数或证书；只有显式启用 `--deepseek-review` 才需要 DeepSeek 密钥。首次运行需在 macOS 系统设置中允许终端/应用使用“辅助功能”和“屏幕录制”。`--max-articles` 是工作区累计保存上限；`--max-new-articles` 是单轮新增上限，默认 5 篇、最高 10 篇，另有最多 3 倍的打开尝试上限。试跑和续采都要求微信客户端保持可见。
 
 [实机试跑记录与下一阶段门槛](docs/mac-ui-poc.md)
+
+[批量读取后退出登录的第一性原理排查](docs/logout-investigation.md)
 
 ## 数据包
 
@@ -86,6 +88,7 @@ gzh-reader proxy restore --state '<proxy-state.json>'
 - 当前实机试跑验证了链接、正文、阅读数和点赞数采集。`oldLikeNum`、转发数、评论数及评论明细尚未达到完整覆盖率；不应把试跑数据称作账号全量数据。
 - 首次试跑需要人在微信中打开目标账号主页，并填写主页名称。只粘贴链接就自动导航到主页仍是后续工作。
 - 长批次曾在微信 OCR/窗口操作阶段停滞；Vision OCR 现有 12 秒子进程硬超时，其他窗口操作的长批次恢复能力仍需实机验证。
+- 用户观察到连续读取约 30 篇后微信退出登录；原因尚未证实。程序现在限制每轮新增、打开次数和连续失败，避免重复打开已完成卡片，但不能保证微信不会再次要求登录。
 - 普通用户看不到的后台私有评论、已删除内容和未公开互动数据无法获取；程序不会伪造。
 - 桌面微信必须可见。为了不打扰前台工作，建议在电脑空闲时运行；任务可中断并从 SQLite 断点恢复。
 - Release 构建目前生成 Apple Silicon 可双击源码包，尚未进行 Apple Developer 签名/公证。
