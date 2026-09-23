@@ -4,6 +4,7 @@ import hashlib
 import json
 import re
 import subprocess
+import sys
 import time
 from collections.abc import Callable
 from dataclasses import dataclass
@@ -279,34 +280,26 @@ class MacHumanController:
         )
 
     def ocr(self, window: Window) -> list[OcrLine]:
-        image = self.screenshot(window)
-        if image is None:
-            return []
-        request = self.Vision.VNRecognizeTextRequest.alloc().init()
-        request.setRecognitionLevel_(self.Vision.VNRequestTextRecognitionLevelAccurate)
-        request.setRecognitionLanguages_(["zh-Hans", "en-US"])
-        request.setUsesLanguageCorrection_(True)
-        handler = self.Vision.VNImageRequestHandler.alloc().initWithCGImage_options_(image, {})
-        ok, error = handler.performRequests_error_([request], None)
-        if not ok:
-            raise RuntimeError(f"OCR 失败：{error}")
-        pixel_w = float(self.Quartz.CGImageGetWidth(image))
-        pixel_h = float(self.Quartz.CGImageGetHeight(image))
-        sx = window.width / pixel_w
-        sy = window.height / pixel_h
-        lines: list[OcrLine] = []
-        for observation in request.results() or []:
-            candidates = observation.topCandidates_(1)
-            if not candidates:
-                continue
-            box = observation.boundingBox()
-            lines.append(OcrLine(
-                text=str(candidates[0].string()),
-                x=float(box.origin.x * pixel_w * sx),
-                y=float((1 - box.origin.y - box.size.height) * pixel_h * sy),
-                width=float(box.size.width * pixel_w * sx),
-                height=float(box.size.height * pixel_h * sy),
-            ))
+        # Vision occasionally blocks indefinitely inside performRequests_error_.
+        # Keep it in a short-lived child process so a stuck OCR call cannot
+        # strand the whole collection run or prevent its checkpoint/export.
+        try:
+            result = subprocess.run(
+                [sys.executable, "-m", "gzh_reader.ocr_worker",
+                 str(window.number), str(window.width), str(window.height)],
+                capture_output=True, text=True, check=False, timeout=12,
+            )
+        except subprocess.TimeoutExpired as exc:
+            raise RuntimeError("微信窗口 OCR 超时（12 秒）；本篇跳过并保留断点") from exc
+        if result.returncode != 0:
+            raise RuntimeError(
+                "微信窗口 OCR 失败：" + (result.stderr.strip()[-300:] or str(result.returncode))
+            )
+        try:
+            payload = json.loads(result.stdout)
+            lines = [OcrLine(**item) for item in payload["lines"]]
+        except (ValueError, KeyError, TypeError) as exc:
+            raise RuntimeError("微信窗口 OCR 返回了无效结果") from exc
         return sorted(lines, key=lambda item: (item.y, item.x))
 
     def click(self, x: float, y: float) -> None:
@@ -703,6 +696,7 @@ class MacHumanAccountCollector:
         attempts = 0
         identity_recoveries = 0
         stop_reason = "viewport_repeated_without_new_articles"
+        halt = False
         profile_number = profile.number
         while (
             repeated < 30
@@ -717,7 +711,12 @@ class MacHumanAccountCollector:
                 profile_number = profile.number
                 previous_fingerprint = ""
                 repeated = 0
-            lines = self.controller.ocr(profile)
+            try:
+                lines = self.controller.ocr(profile)
+            except RuntimeError as exc:
+                stop_reason = "ocr_unavailable"
+                self.progress("human_retry", {"error": f"{type(exc).__name__}: {exc}"})
+                break
             if profile.number != profile_number or profile_identity_conflicts(lines, account_name):
                 identity_recoveries += 1
                 self.progress("identity_mismatch", {
@@ -794,8 +793,15 @@ class MacHumanAccountCollector:
                     repeated = 0
                     restart_profile = True
                     break
+                try:
+                    profile_lines = self.controller.ocr(profile)
+                except RuntimeError as exc:
+                    stop_reason = "ocr_unavailable"
+                    self.progress("human_retry", {"error": f"{type(exc).__name__}: {exc}"})
+                    halt = True
+                    break
                 if profile.number != profile_number or profile_identity_conflicts(
-                    self.controller.ocr(profile), account_name
+                    profile_lines, account_name
                 ):
                     identity_recoveries += 1
                     self.progress("identity_mismatch", {
@@ -810,6 +816,8 @@ class MacHumanAccountCollector:
                     restart_profile = True
                     break
             if max_articles is not None and len(completed_urls) >= max_articles:
+                break
+            if halt:
                 break
             if restart_profile:
                 continue
