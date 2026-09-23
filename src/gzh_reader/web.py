@@ -20,6 +20,12 @@ class CollectRequest(BaseModel):
     account_name: str | None = None
     max_articles: int | None = 20
     foreground_consent: bool = False
+    deepseek_review: bool = False
+    deepseek_api_key: str | None = None
+
+
+class ModelTestRequest(BaseModel):
+    deepseek_api_key: str | None = None
 
 
 HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
@@ -33,10 +39,14 @@ h1{margin-top:0}label{display:block;margin:18px 0 7px;font-weight:650}input[type
 <label>公众号名称（与微信主页一致）</label><input id="account_name" type="text" placeholder="例如：监所家属">
 <label>最多保存篇数（留空为持续读取）</label><input id="max_articles" type="number" min="1" value="20">
 <label>输出目录</label><input id="output" type="text" value="__OUTPUT__">
+<label class="check"><input id="deepseek_review" type="checkbox"> OCR 无法识别文章卡片时，最多调用 DeepSeek 5 次复核公开列表文字（不发送正文或截图）</label>
+<label>DeepSeek API key（仅本次使用，不保存）</label><input id="deepseek_key" type="password" autocomplete="off" placeholder="可留空并使用 DEEPSEEK_API_KEY 环境变量">
+<button id="test_model" type="button">测试 DeepSeek 连接</button><span id="model_status"></span>
 <div class="warning"><label class="check"><input id="consent" type="checkbox"> 我知道读取期间 Agent 会操作桌面微信窗口；请在暂时不用电脑时开始。程序不安装证书、不切换代理，也不调用第三方导出服务。</label></div>
 <button id="start">开始/继续</button><div id="status">等待开始</div></main>
 <script>const q=x=>document.querySelector(x),btn=q('#start'),status=q('#status');
-btn.onclick=async()=>{btn.disabled=true;const body={url:q('#url').value,output:q('#output').value,account_name:q('#account_name').value.trim()||null,max_articles:q('#max_articles').value?Number(q('#max_articles').value):null,foreground_consent:q('#consent').checked};
+q('#test_model').onclick=async()=>{q('#model_status').textContent='正在测试…';let r=await fetch('/api/model/test',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify({deepseek_api_key:q('#deepseek_key').value||null})});q('#model_status').textContent=r.ok?'连接成功':('连接失败：'+await r.text())};
+btn.onclick=async()=>{btn.disabled=true;const body={url:q('#url').value,output:q('#output').value,account_name:q('#account_name').value.trim()||null,max_articles:q('#max_articles').value?Number(q('#max_articles').value):null,foreground_consent:q('#consent').checked,deepseek_review:q('#deepseek_review').checked,deepseek_api_key:q('#deepseek_review').checked?(q('#deepseek_key').value||null):null};
 let r=await fetch('/api/collect',{method:'POST',headers:{'content-type':'application/json'},body:JSON.stringify(body)});if(!r.ok){status.textContent=await r.text();btn.disabled=false;return}poll()};
 async function poll(){let s=await (await fetch('/api/status')).json();status.textContent=JSON.stringify(s,null,2);if(s.running)setTimeout(poll,900);else btn.disabled=false}</script></body></html>"""
 
@@ -51,6 +61,16 @@ def status() -> dict:
     return STATE
 
 
+@app.post("/api/model/test")
+def model_test(request: ModelTestRequest) -> dict:
+    from .deepseek import DeepSeekClient, DeepSeekError
+
+    try:
+        return DeepSeekClient(request.deepseek_api_key).test()
+    except DeepSeekError as exc:
+        raise HTTPException(400, str(exc)) from None
+
+
 @app.post("/api/collect")
 def collect(request: CollectRequest) -> dict:
     if STATE["running"]:
@@ -63,7 +83,13 @@ def collect(request: CollectRequest) -> dict:
         def progress(stage: str, detail: dict) -> None:
             STATE.update({"stage": stage, "detail": detail, "running": stage != "complete"})
         try:
-            workspace = MacHumanAccountCollector(progress).collect(
+            collector_options = {}
+            if request.deepseek_review:
+                from .deepseek import DeepSeekCardReviewer, DeepSeekClient
+                collector_options["reviewer"] = DeepSeekCardReviewer(
+                    DeepSeekClient(request.deepseek_api_key)
+                )
+            workspace = MacHumanAccountCollector(progress, **collector_options).collect(
                 request.url, Path(request.output),
                 account_name=request.account_name,
                 max_articles=request.max_articles,
