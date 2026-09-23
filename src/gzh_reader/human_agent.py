@@ -9,6 +9,7 @@ import time
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .audit import audit_workspace
 from .exports import export_all
@@ -16,6 +17,9 @@ from .models import Account, ArticleSeed, ContentSnapshot, MetricSnapshot, Statu
 from .storage import Store
 from .urls import article_stable_key, normalize_url
 from .workspace import Workspace
+
+if TYPE_CHECKING:
+    from .deepseek import DeepSeekCardReviewer
 
 Progress = Callable[[str, dict], None]
 
@@ -555,9 +559,13 @@ class MacHumanController:
 
 
 class MacHumanAccountCollector:
-    def __init__(self, progress: Progress = _silent, controller: MacHumanController | None = None):
+    def __init__(
+        self, progress: Progress = _silent, controller: MacHumanController | None = None,
+        reviewer: DeepSeekCardReviewer | None = None,
+    ):
         self.progress = progress
         self.controller = controller or MacHumanController()
+        self.reviewer = reviewer
 
     @staticmethod
     def _target_count(lines: list[OcrLine]) -> int | None:
@@ -730,6 +738,13 @@ class MacHumanAccountCollector:
                 repeated = 0
                 continue
             cards = parse_profile_cards(lines, profile.height)
+            if not cards and self.reviewer is not None:
+                try:
+                    cards = self.reviewer.review_cards(lines, profile.height)
+                    if cards:
+                        self.progress("model_review", {"cards": len(cards), "calls": self.reviewer.calls})
+                except RuntimeError as exc:
+                    self.progress("model_review_failed", {"error": str(exc)})
             fingerprint = hashlib.sha256("\n".join(
                 f"{card.title}|{card.read_num}|{card.like_num}" for card in cards
             ).encode()).hexdigest()
