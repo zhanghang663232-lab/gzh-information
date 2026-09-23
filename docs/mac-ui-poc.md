@@ -24,19 +24,19 @@ uv sync --extra mac --extra dev
 .venv/bin/gzh-reader collect \
   --url '<目标公众号的一篇文章链接>' \
   --account-name '<微信主页显示的名称>' \
-  --max-articles 20 \
+  --max-new-articles 5 \
   --output '<数据根目录>'
 ```
 
-`--max-articles` 是该工作区累计保存的文章数量上限。试跑后读取 `<数据根目录>/<公众号名>/audit/coverage.json`，核对目标账号、正文和字段覆盖率。继续试跑可执行：
+`--max-articles` 是该工作区累计保存的文章数量上限，可省略；`--max-new-articles` 是每轮新增上限，默认 5 篇。试跑后读取 `<数据根目录>/<公众号名>/audit/coverage.json`，核对目标账号、正文和字段覆盖率。继续试跑可执行：
 
 ```bash
-.venv/bin/gzh-reader resume --workspace '<数据根目录>/<公众号名>' --max-articles 40
+.venv/bin/gzh-reader resume --workspace '<数据根目录>/<公众号名>' --max-new-articles 5
 .venv/bin/gzh-reader audit --workspace '<数据根目录>/<公众号名>'
 .venv/bin/gzh-reader export --workspace '<数据根目录>/<公众号名>'
 ```
 
-去掉 `--max-articles` 才是持续续采。运行期间需保持微信可见；工作区数据不会进入 Git 仓库。源码采用 MIT License 的独立实现，没有复制参考 Windows 项目的代码。
+每轮最多新增 5 篇，需由用户决定是否再启动下一轮；不会自动连续跑到账号全量。运行期间需保持微信可见；工作区数据不会进入 Git 仓库。源码采用 MIT License 的独立实现，没有复制参考 Windows 项目的代码。
 
 ## 批量阶段还需解决
 
