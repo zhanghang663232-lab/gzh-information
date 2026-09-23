@@ -32,7 +32,13 @@ SQLite 合并、续传、覆盖率审计、JSONL/CSV/Markdown/Obsidian 导出
 4. 保留默认的“最多保存 20 篇”进行试跑，勾选桌面操作确认并开始。
 5. 查看工作区 `audit/coverage.json`。试跑确认后可用下方 `resume` 命令继续读取。
 
-程序不会读取或保存 Cookie、Credential、API key，也不会修改 HTTP、HTTPS 或 SOCKS 代理。
+默认采集不读取 Cookie、Credential 或 API key，也不会修改 HTTP、HTTPS 或 SOCKS 代理。可选的 DeepSeek 复核会在本次运行中读取用户输入的 API key，但不会持久化。
+
+### 可选：试用 DeepSeek
+
+向导里可在“DeepSeek API key”框临时输入密钥，点击“测试 DeepSeek 连接”。测试只发送固定的连接测试文字；密钥不会保存到工作区。勾选“DeepSeek 复核”后，只有常规规则无法解析公众号文章卡片时才发送该页公开 OCR 文字，单次运行最多 5 次。文章正文和截图不会发送给模型，模型只建议 OCR 行号；点击坐标、阅读数和点赞数仍由本地程序从原始 OCR 行验证。不开启复核时完全不调用模型。
+
+命令行也可运行 `gzh-reader model test --provider deepseek`，在终端的隐藏输入提示中键入密钥；续采时加 `--deepseek-review` 同样会提示。可选用 `DEEPSEEK_API_KEY` 环境变量，但不要把密钥写入仓库或命令参数。默认模型为 `deepseek-flash`，关闭思考模式并限制输出长度，以控制消耗。连接测试会产生一次很小的 API 调用；当前没有本机实钥验证。
 
 由于这是“模拟真人操作”的桌面 Agent，当前宿主机模式需要微信窗口可见。不打扰宿主机的目标方案是在独立 macOS VM 中运行微信与 Agent；设计与安全边界见 [后台 Agent 路线](docs/background-agent.md)。
 
@@ -48,7 +54,7 @@ gzh-reader doctor
 gzh-reader proxy restore --state '<proxy-state.json>'
 ```
 
-这些桌面微信命令不需要 API key、代理参数或证书。首次运行需在 macOS 系统设置中允许终端/应用使用“辅助功能”和“屏幕录制”。`--max-articles` 是工作区内累计保存的文章上限；省略后继续读取。试跑和续采都要求微信客户端保持可见。
+默认桌面微信命令不需要 API key、代理参数或证书；只有显式启用 `--deepseek-review` 才需要 DeepSeek 密钥。首次运行需在 macOS 系统设置中允许终端/应用使用“辅助功能”和“屏幕录制”。`--max-articles` 是工作区内累计保存的文章上限；省略后继续读取。试跑和续采都要求微信客户端保持可见。
 
 [实机试跑记录与下一阶段门槛](docs/mac-ui-poc.md)
 
@@ -79,7 +85,7 @@ gzh-reader proxy restore --state '<proxy-state.json>'
 - 每个列表视口和每篇文章都强制校验目标公众号名称；发现串号立即拒绝入库并从样例链接恢复。
 - 当前实机试跑验证了链接、正文、阅读数和点赞数采集。`oldLikeNum`、转发数、评论数及评论明细尚未达到完整覆盖率；不应把试跑数据称作账号全量数据。
 - 首次试跑需要人在微信中打开目标账号主页，并填写主页名称。只粘贴链接就自动导航到主页仍是后续工作。
-- 长批次曾在微信 OCR/窗口操作阶段停滞；批量运行前还需加入超时和恢复机制。
+- 长批次曾在微信 OCR/窗口操作阶段停滞；Vision OCR 现有 12 秒子进程硬超时，其他窗口操作的长批次恢复能力仍需实机验证。
 - 普通用户看不到的后台私有评论、已删除内容和未公开互动数据无法获取；程序不会伪造。
 - 桌面微信必须可见。为了不打扰前台工作，建议在电脑空闲时运行；任务可中断并从 SQLite 断点恢复。
 - Release 构建目前生成 Apple Silicon 可双击源码包，尚未进行 Apple Developer 签名/公证。
