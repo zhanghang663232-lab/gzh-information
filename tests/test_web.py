@@ -8,6 +8,7 @@ def test_home_and_foreground_consent_gate():
     home = client.get("/")
     assert home.status_code == 200
     assert "测试 DeepSeek 连接" in home.text
+    assert "本轮最多新增篇数" in home.text
     STATE.update({"stage": "idle", "detail": {}, "running": False})
     response = client.post("/api/collect", json={
         "url": "https://mp.weixin.qq.com/s?__biz=b",
