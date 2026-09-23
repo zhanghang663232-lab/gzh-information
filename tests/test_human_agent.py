@@ -119,6 +119,43 @@ def test_close_shortcut_is_not_sent_without_verified_window_focus():
     assert events == []
 
 
+def test_capture_records_action_sequence_without_article_text(monkeypatch):
+    profile = Window(1, "公众号", 0, 0, 400, 600, 0, 42)
+
+    class FakeController:
+        def click(self, x, y):
+            pass
+
+        def wait_window(self, title, timeout):
+            return profile
+
+        def copy_link(self):
+            return "https://mp.weixin.qq.com/s/test"
+
+        def copy_page_text(self):
+            return "文章正文" * 30
+
+        def page_bottom(self):
+            return "阅读 20\n监所家属"
+
+        def close_article(self):
+            pass
+
+        def focus_profile(self):
+            return profile
+
+    collector = MacHumanAccountCollector(controller=FakeController())
+    events = []
+    collector.action = events.append
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    collector._capture_card(profile, ProfileCard("标题", 20, 1, 100, 200), "监所家属")
+    assert events == [
+        "before_click_card", "article_window_open", "before_copy_link",
+        "before_copy_body", "before_page_bottom", "before_close_article",
+        "article_window_closed",
+    ]
+
+
 def test_known_card_signature_requires_unique_url():
     rows = [
         {"url": "u1", "title": "标题", "readNum": 10, "likeNum": 0},
