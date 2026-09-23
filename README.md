@@ -1,6 +1,6 @@
 # gzh-information v2
 
-面向 Apple Silicon Mac 的微信公众号公开数据归档原型。当前先验证桌面微信界面采集：打开目标账号主页、试跑固定篇数、审计结果，再从同一工作区续采。文章正文和可见互动字段分别记账；缺失字段保持未知。
+面向 Apple Silicon Mac 的微信公众号公开数据归档原型。当前优先验证少量桌面微信界面采集，形成可复用流程；再由确定性程序分批续采，可选用低消耗模型复核难识别的公开列表文字。它尚未完成目标账号全量读取。文章正文和可见互动字段分别记账；缺失字段保持未知。
 
 > 当前为 v2 alpha。原有脚本保留在 `wechat-archive/`，作为 legacy 流程继续存在一个版本周期。v2 是独立 clean-room 实现，没有复制 `Access_wechat_article` 的 CC BY-NC-SA 源码。
 
@@ -57,6 +57,8 @@ gzh-reader proxy restore --state '<proxy-state.json>'
 默认桌面微信命令不需要 API key、代理参数或证书；只有显式启用 `--deepseek-review` 才需要 DeepSeek 密钥。首次运行需在 macOS 系统设置中允许终端/应用使用“辅助功能”和“屏幕录制”。`--max-articles` 是工作区累计保存上限；`--max-new-articles` 是单轮新增上限，默认 5 篇、最高 10 篇，另有最多 3 倍的打开尝试上限。试跑和续采都要求微信客户端保持可见。
 
 [实机试跑记录与下一阶段门槛](docs/mac-ui-poc.md)
+
+新版微信标签页、小程序弹窗和失败恢复的实际边界也记录在上述试跑文档；这些保护降低误点与重复打开风险，但不保证长批次不会触发微信重新登录。
 
 [批量读取后退出登录的第一性原理排查](docs/logout-investigation.md)
 

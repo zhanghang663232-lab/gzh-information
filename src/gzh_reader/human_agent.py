@@ -39,6 +39,7 @@ class Window:
     height: float
     layer: int
     pid: int
+    onscreen: bool = False
 
 
 @dataclass(slots=True)
@@ -124,6 +125,12 @@ def parse_profile_cards(lines: list[OcrLine], window_height: float | None = None
         for previous in reversed(ordered[:index]):
             if previous.cy <= last_metric_y + 4 or line.cy - previous.cy > 130:
                 break
+            if (
+                previous.cy < 180
+                and previous.text.strip().startswith("全部")
+                and "文" in previous.text
+            ):
+                continue
             if _is_noise(previous.text):
                 continue
             if candidates and candidates[-1].cy - previous.cy > 34:
@@ -165,6 +172,23 @@ def unique_known_cards(rows: list[dict]) -> dict[tuple[str, int | None, int | No
     return {signature: next(iter(urls)) for signature, urls in matches.items() if len(urls) == 1}
 
 
+def completed_human_rows(store: Store, account_name: str) -> list[dict]:
+    """Resume across the legacy `human-` and current `human:` account IDs."""
+    return store.rows(
+        """SELECT a.url, a.title, m.readNum, m.likeNum FROM articles a
+           JOIN metric_snapshots m ON m.id = (
+             SELECT MAX(m2.id) FROM metric_snapshots m2
+             WHERE m2.article_key=a.stable_key AND m2.readNum IS NOT NULL)
+           WHERE a.biz IN (
+             SELECT biz FROM accounts
+             WHERE name=? AND source='mac_human_agent'
+           ) AND EXISTS (
+             SELECT 1 FROM content_snapshots c
+             WHERE c.article_key=a.stable_key AND c.status='ok')""",
+        (account_name,),
+    )
+
+
 def account_name_from_profile(lines: list[OcrLine]) -> str:
     ordered = sorted(lines, key=lambda item: item.cy)
     for index, line in enumerate(ordered):
@@ -197,7 +221,21 @@ def account_name_from_profile(lines: list[OcrLine]) -> str:
 
 def profile_matches_account(lines: list[OcrLine], account_name: str) -> bool:
     texts = {line.text.strip() for line in lines}
-    return account_name in texts and any("篇原创内容" in text for text in texts)
+    account_at_top = any(
+        account_name in line.text and len(line.text.strip()) <= len(account_name) + 5
+        and line.cy < 150 for line in lines
+    )
+    if not account_at_top:
+        return False
+    if any("篇原创内容" in text for text in texts):
+        return True
+    # The account header collapses while its article list is scrolled. Keep
+    # recognizing that same tab using its fixed top navigation, not the
+    # author signature at the bottom of an article.
+    nav = "".join(line.text.strip() for line in lines if line.cy < 180)
+    return "全部" in nav and "文" in nav and any(
+        "阅读" in text for text in texts
+    )
 
 
 def profile_identity_conflicts(lines: list[OcrLine], account_name: str) -> bool:
@@ -236,19 +274,20 @@ class MacHumanController:
         self.AX = ApplicationServices
         self.Quartz = Quartz
         self.Vision = Vision
+        self.tabbed_profile_account: str | None = None
 
     def activate(self) -> None:
-        subprocess.run(["open", "-a", "WeChat"], check=False)
-        # Reopen moves an existing WeChat window back to the active macOS Space.
-        # NSRunningApplication.activateWithOptions_ alone may leave it off-screen.
-        subprocess.run(
-            ["osascript", "-e", 'tell application "WeChat" to reopen',
-             "-e", 'tell application "WeChat" to activate'],
-            capture_output=True, check=False, timeout=8,
-        )
         apps = self.AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(
             "com.tencent.xinWeChat"
         )
+        if not apps:
+            subprocess.run(
+                ["open", "-b", "com.tencent.xinWeChat"],
+                capture_output=True, check=False, timeout=8,
+            )
+            apps = self.AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(
+                "com.tencent.xinWeChat"
+            )
         options = (
             self.AppKit.NSApplicationActivateAllWindows
             | self.AppKit.NSApplicationActivateIgnoringOtherApps
@@ -259,11 +298,18 @@ class MacHumanController:
 
     def windows(self) -> list[Window]:
         q = self.Quartz
-        rows = q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionOnScreenOnly, q.kCGNullWindowID)
+        # Stage Manager can move a live WeChat window out of the current
+        # visible group when the local task/terminal becomes frontmost.
+        # Enumerate all windows, then raise and verify the exact target before
+        # OCR or input instead of treating an off-screen window as logged out.
+        rows = q.CGWindowListCopyWindowInfo(q.kCGWindowListOptionAll, q.kCGNullWindowID)
         result: list[Window] = []
         for row in rows:
             owner = str(row.get(q.kCGWindowOwnerName, ""))
-            if owner not in {"微信", "WeChat"}:
+            # WeChat 4.1.15 can host detached public-account/article windows
+            # in WeChatAppEx rather than in the main WeChat process. Titles
+            # and account OCR are still checked before any interaction.
+            if owner not in {"微信", "微信 2", "WeChat", "WeChatAppEx"}:
                 continue
             bounds = row.get(q.kCGWindowBounds, {})
             result.append(Window(
@@ -273,12 +319,13 @@ class MacHumanController:
                 width=float(bounds.get("Width", 0)), height=float(bounds.get("Height", 0)),
                 layer=int(row.get(q.kCGWindowLayer, 0)),
                 pid=int(row.get(q.kCGWindowOwnerPID, 0)),
+                onscreen=bool(row.get(q.kCGWindowIsOnscreen, False)),
             ))
         return result
 
     def window(self, title: str, *, min_width: float = 200) -> Window | None:
         matches = [item for item in self.windows() if item.title == title and item.width >= min_width]
-        return min(matches, key=lambda item: (item.layer, -item.width)) if matches else None
+        return min(matches, key=lambda item: (not item.onscreen, item.layer, -item.width)) if matches else None
 
     def wait_window(self, title: str, timeout: float = 8) -> Window:
         deadline = time.monotonic() + timeout
@@ -364,20 +411,67 @@ class MacHumanController:
 
     def _raise(self, target: Window) -> bool:
         ax = self.AX
-        app = ax.AXUIElementCreateApplication(target.pid)
-        error, windows = ax.AXUIElementCopyAttributeValue(app, ax.kAXWindowsAttribute, None)
-        if error != 0 or not windows:
-            return False
-        for item in windows:
-            _, title = ax.AXUIElementCopyAttributeValue(item, ax.kAXTitleAttribute, None)
-            if str(title or "") != target.title:
+        running_apps = list(
+            self.AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(
+                "com.tencent.xinWeChat"
+            )
+        )
+        pids = [target.pid]
+        for running in running_apps:
+            pid = int(running.processIdentifier())
+            if pid not in pids:
+                pids.append(pid)
+        for pid in pids:
+            app = ax.AXUIElementCreateApplication(pid)
+            error, windows = ax.AXUIElementCopyAttributeValue(app, ax.kAXWindowsAttribute, None)
+            if error != 0 or not windows:
                 continue
-            if ax.AXUIElementPerformAction(item, ax.kAXRaiseAction) == 0:
+            matches = []
+            for item in windows:
+                _, title = ax.AXUIElementCopyAttributeValue(item, ax.kAXTitleAttribute, None)
+                if str(title or "") == target.title:
+                    matches.append(item)
+            # A title alone cannot identify one of multiple same-named
+            # windows. Do not send clicks or Command-W into an ambiguous UI.
+            if len(matches) != 1:
+                continue
+            for running in running_apps:
+                if int(running.processIdentifier()) == pid:
+                    running.activateWithOptions_(
+                        self.AppKit.NSApplicationActivateAllWindows
+                        | self.AppKit.NSApplicationActivateIgnoringOtherApps
+                    )
+                    break
+            if ax.AXUIElementPerformAction(matches[0], ax.kAXRaiseAction) == 0:
                 time.sleep(0.25)
                 return True
-        return False
+        # WeChat 4.1.x may expose its WebView window to Quartz while AX omits
+        # it. Fall back only when the exact window is the sole visible match
+        # after activating its owning process; never infer focus from a title
+        # that could belong to another tab/window.
+        owner = self.AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(
+            target.pid
+        )
+        if owner is None:
+            return False
+        owner.activateWithOptions_(
+            self.AppKit.NSApplicationActivateAllWindows
+            | self.AppKit.NSApplicationActivateIgnoringOtherApps
+        )
+        time.sleep(0.25)
+        visible = [
+            item for item in self.windows()
+            if item.onscreen and item.title == target.title
+        ]
+        return len(visible) == 1 and visible[0].number == target.number
 
     def focus_profile(self) -> Window:
+        account_name = getattr(self, "tabbed_profile_account", None)
+        if account_name:
+            profile = self._tabbed_profile(account_name)
+            if profile is None:
+                raise RuntimeError("新版微信标签页未能恢复目标公众号主页，已停止")
+            return profile
         if self.window("公众号") is None:
             self.activate()
         for viewer in [item for item in self.windows() if item.title == "图片和视频"]:
@@ -388,6 +482,16 @@ class MacHumanController:
         return self.wait_window("公众号")
 
     def focus_browser(self) -> Window:
+        if getattr(self, "tabbed_profile_account", None):
+            browser = self.wait_window("微信 (窗口)")
+            if not self._raise(browser):
+                raise RuntimeError("无法前置新版微信文章标签，已停止")
+            lines = self.ocr(browser)
+            if profile_matches_account(lines, self.tabbed_profile_account):
+                raise RuntimeError("当前仍是公众号主页，未确认文章标签已打开")
+            if len("".join(item.text for item in lines)) < 50:
+                raise RuntimeError("文章标签内容尚未加载，已停止")
+            return browser
         if self.window("微信 (窗口)") is None:
             self.activate()
         browser = self.wait_window("微信 (窗口)")
@@ -400,6 +504,74 @@ class MacHumanController:
         if not self._raise(target):
             raise RuntimeError(f"无法确认 {target.title} 窗口焦点，已拒绝关闭快捷键")
         self.hotkey(13, self.Quartz.kCGEventFlagMaskCommand)
+
+    def _tabbed_profile(self, account_name: str) -> Window | None:
+        browser = self.window("微信 (窗口)")
+        if browser is None:
+            self.profile_probe_reason = "window_missing"
+            return None
+        raised = self._raise(browser)
+        # A visible WebView can be absent from the AX window tree on WeChat
+        # 4.1.x. Reading this exact Quartz window for identity is safe even
+        # when AXRaise fails; clicks below still require a unique visible
+        # target, and their result is checked by OCR.
+        if not raised and not browser.onscreen:
+            self.profile_probe_reason = "window_not_raised_or_onscreen"
+            return None
+        lines = self.ocr(browser)
+        if profile_matches_account(lines, account_name):
+            self.profile_probe_reason = "matched"
+            return browser
+        self.profile_probe_reason = "profile_ocr_no_match:" + "|".join(
+            line.text[:30] for line in lines[:12]
+        )
+        # New WeChat keeps the account tab beside the article tab in the same
+        # window. Only a visible, exact account-name tab near the top is safe
+        # to select; an author name in the article body is not enough.
+        tabs = [
+            line for line in lines
+            if line.text.strip() == account_name and line.cy < min(70, browser.height * 0.1)
+        ]
+        if tabs:
+            tab = tabs[0]
+            click_x, click_y = tab.cx, tab.cy
+        elif browser.width >= 700 and browser.height >= 500:
+            # WeChat's WebView may hide tab titles from Vision OCR. In the
+            # observed three-tab layout the account is the second tab. A
+            # single geometry fallback is allowed only with post-click OCR
+            # verification; it must never authorize capture by itself.
+            click_x, click_y = browser.width * 0.42, browser.height * 0.03
+        else:
+            return None
+        self.click(browser.x + click_x, browser.y + click_y)
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            browser = self.window("微信 (窗口)")
+            if browser is None:
+                return None
+            if profile_matches_account(self.ocr(browser), account_name):
+                self.profile_probe_reason = "matched_after_tab_click"
+                return browser
+            time.sleep(0.3)
+        return None
+
+    def wait_article(self, title: str, timeout: float = 8) -> Window:
+        if not getattr(self, "tabbed_profile_account", None):
+            return self.wait_window("微信 (窗口)", timeout=timeout)
+        deadline = time.monotonic() + timeout
+        while time.monotonic() < deadline:
+            browser = self.window("微信 (窗口)")
+            if browser is not None:
+                lines = self.ocr(browser)
+                text = "".join(line.text for line in lines)
+                if (
+                    not profile_matches_account(lines, self.tabbed_profile_account)
+                    and len(text) >= 80
+                    and (title[:6] in text or title[-6:] in text)
+                ):
+                    return browser
+            time.sleep(0.3)
+        raise RuntimeError("新版微信未能确认文章标签与目标卡片一致，已停止")
 
     def open_profile(self, url: str, account_name: str | None = None) -> Window:
         """Restore the account profile from a public article in WeChat itself."""
@@ -421,6 +593,17 @@ class MacHumanController:
                 and not any(word in line.text for word in ("写留言", "推荐", "点赞", "分享"))
             ]
 
+        initial_browser = self.window("微信 (窗口)") if account_name else None
+        if account_name:
+            tabbed = self._tabbed_profile(account_name)
+            if tabbed is not None:
+                self.tabbed_profile_account = account_name
+                return tabbed
+            if initial_browser is not None:
+                raise RuntimeError(
+                    "新版微信标签页中未能核对目标公众号主页；已停止，未切换聊天主窗口或关闭标签页"
+                    f"（{getattr(self, 'profile_probe_reason', 'unknown')}）"
+                )
         existing = self.window("公众号")
         if existing:
             self._raise(existing)
@@ -433,6 +616,18 @@ class MacHumanController:
         self.activate()
         browser = self.window("微信 (窗口)")
         if browser is not None:
+            # WeChat 4.1.15 can show a public-account profile as a tab in this
+            # same window. Closing it here would discard the exact profile the
+            # user prepared, so stop until the tabbed flow has its own state
+            # transitions and close-tab verification.
+            if account_name and profile_matches_account(self.ocr(browser), account_name):
+                raise RuntimeError(
+                    "目标公众号主页位于新版微信标签页；当前采集器尚未适配标签页，已停止且未关闭窗口"
+                )
+            if account_name:
+                raise RuntimeError(
+                    "微信中存在标签页，但未确认目标公众号主页；请先切换到目标主页，已停止且未关闭窗口"
+                )
             self._close_window(browser)
             time.sleep(0.8)
         main = self.wait_window("微信")
@@ -479,10 +674,30 @@ class MacHumanController:
         board = self.AppKit.NSPasteboard.generalPasteboard()
         return str(board.stringForType_(self.AppKit.NSPasteboardTypeString) or "")
 
+    def dismiss_miniprogram_prompt(self) -> bool:
+        browser = self.window("微信 (窗口)")
+        if browser is None:
+            return False
+        lines = self.ocr(browser)
+        if not any("即将打开小程序" in line.text for line in lines):
+            return False
+        cancel = [line for line in lines if line.text.strip() == "取消"]
+        if len(cancel) != 1:
+            raise RuntimeError("微信小程序弹窗出现，但无法唯一确认取消按钮；已停止")
+        self.click(browser.x + cancel[0].cx, browser.y + cancel[0].cy)
+        time.sleep(0.2)
+        if any("即将打开小程序" in line.text for line in self.ocr(browser)):
+            raise RuntimeError("微信小程序弹窗未关闭；已停止，请手动点击取消")
+        return True
+
     def copy_page_text(self) -> str:
         browser = self.focus_browser()
-        self.click(browser.x + browser.width / 2, browser.y + min(180, browser.height / 3))
+        self.dismiss_miniprogram_prompt()
+        # Never focus by clicking the center of an article: embedded mini-app
+        # cards often cover that area and open a blocking confirmation modal.
+        self.click(browser.x + min(24, browser.width * 0.03), browser.y + min(180, browser.height / 3))
         time.sleep(0.15)
+        self.dismiss_miniprogram_prompt()
         self.hotkey(0, self.Quartz.kCGEventFlagMaskCommand)
         self.hotkey(8, self.Quartz.kCGEventFlagMaskCommand)
         time.sleep(0.4)
@@ -494,7 +709,13 @@ class MacHumanController:
         time.sleep(0.25)
         browser = self.focus_browser()
         self.AppKit.NSPasteboard.generalPasteboard().clearContents()
-        self.click(browser.x + browser.width - 28, browser.y + 21)
+        if getattr(self, "tabbed_profile_account", None):
+            # Observed on WeChat 4.1.15: the active third tab's ellipsis sits
+            # near 70.7% of the window width. The following OCR check must
+            # find the literal menu action before another click is permitted.
+            self.click(browser.x + browser.width * 0.707, browser.y + browser.height * 0.03)
+        else:
+            self.click(browser.x + browser.width - 28, browser.y + 21)
         time.sleep(0.3)
         deadline = time.monotonic() + 4
         while time.monotonic() < deadline:
@@ -521,6 +742,9 @@ class MacHumanController:
         browser = self.window("微信 (窗口)")
         if browser is None:
             return
+        account_name = getattr(self, "tabbed_profile_account", None)
+        if account_name and profile_matches_account(self.ocr(browser), account_name):
+            raise RuntimeError("已返回公众号主页，拒绝再次关闭标签页")
         self._close_window(browser)
         time.sleep(0.35)
 
@@ -609,10 +833,14 @@ class MacHumanAccountCollector:
     ) -> HumanCapture:
         self.action("before_click_card")
         self.controller.click(profile.x + card.click_x, profile.y + card.click_y)
-        self.controller.wait_window("微信 (窗口)", timeout=7)
-        self.action("article_window_open")
-        time.sleep(0.5)
         try:
+            wait_article = getattr(self.controller, "wait_article", None)
+            if wait_article is not None:
+                wait_article(card.title, timeout=8)
+            else:
+                self.controller.wait_window("微信 (窗口)", timeout=7)
+            self.action("article_window_open")
+            time.sleep(0.5)
             self.action("before_copy_link")
             url = self.controller.copy_link()
             self.action("before_copy_body")
@@ -649,7 +877,7 @@ class MacHumanAccountCollector:
                 # as well.  The caller restores it from the seed article.
                 pass
 
-    def _save(self, ws: Workspace, store: Store, account: Account, capture: HumanCapture) -> None:
+    def _save(self, ws: Workspace, store: Store, account: Account, capture: HumanCapture) -> bool:
         key = article_stable_key(url=capture.url)
         article = ArticleSeed(
             stable_key=key, url=capture.url, biz=account.biz, title=capture.title,
@@ -691,6 +919,7 @@ class MacHumanAccountCollector:
             key, [], Status.OK if capture.comment_num == 0 else Status.MISSING,
             "" if capture.comment_num == 0 else "桌面页面只能确认公开评论计数，评论明细尚未展开",
         )
+        return body_ok
 
     def collect(
         self, url: str, output: Path, *, max_articles: int | None = None,
@@ -698,7 +927,6 @@ class MacHumanAccountCollector:
     ) -> Path:
         if not 1 <= max_new_articles <= 10:
             raise ValueError("本轮最多新增篇数必须在 1 到 10 之间")
-        self.controller.activate()
         self.controller.open_profile(url, account_name)
         profile = self.controller.scroll_to_top()
         lines = self.controller.ocr(profile)
@@ -720,16 +948,7 @@ class MacHumanAccountCollector:
         ws = Workspace.create(output, account_name)
         store = Store(ws.database)
         store.upsert_account(account)
-        completed_rows = store.rows(
-            """SELECT a.url, a.title, m.readNum, m.likeNum FROM articles a
-               JOIN metric_snapshots m ON m.id = (
-                 SELECT MAX(m2.id) FROM metric_snapshots m2
-                 WHERE m2.article_key=a.stable_key AND m2.readNum IS NOT NULL)
-               WHERE a.biz=? AND EXISTS (
-                 SELECT 1 FROM content_snapshots c
-                 WHERE c.article_key=a.stable_key AND c.status='ok')""",
-            (account.biz,),
-        )
+        completed_rows = completed_human_rows(store, account_name)
         completed_urls = {row["url"] for row in completed_rows}
         known_cards = unique_known_cards(completed_rows)
         ambiguous_cards: set[tuple[str, int | None, int | None]] = set()
@@ -855,16 +1074,27 @@ class MacHumanAccountCollector:
                         "biz": account.biz, "cards": card_hints,
                     })
                     if capture.url not in completed_urls:
-                        self._save(ws, store, account, capture)
-                        completed_urls.add(capture.url)
-                        new_in_run += 1
-                        if known_cards.get(signature) not in (None, capture.url):
-                            known_cards.pop(signature, None)
-                            ambiguous_cards.add(signature)
-                        elif signature not in ambiguous_cards:
-                            known_cards[signature] = capture.url
-                    consecutive_failures = 0
-                    identity_recoveries = 0
+                        body_ok = self._save(ws, store, account, capture)
+                        if body_ok:
+                            completed_urls.add(capture.url)
+                            new_in_run += 1
+                            if known_cards.get(signature) not in (None, capture.url):
+                                known_cards.pop(signature, None)
+                                ambiguous_cards.add(signature)
+                            elif signature not in ambiguous_cards:
+                                known_cards[signature] = capture.url
+                        else:
+                            consecutive_failures += 1
+                            self.progress("body_missing", {
+                                "title": card.title,
+                                "reason": "文章正文复制失败；记录已保留但不计为完成",
+                            })
+                            if consecutive_failures >= 2:
+                                stop_reason = "consecutive_body_failures"
+                                halt = True
+                    if capture.url in completed_urls:
+                        consecutive_failures = 0
+                        identity_recoveries = 0
                 except AccountMismatchError as exc:
                     identity_recoveries += 1
                     self.progress("identity_mismatch", {
@@ -894,6 +1124,19 @@ class MacHumanAccountCollector:
                         self.controller.close_article()
                     except RuntimeError:
                         pass
+                    try:
+                        profile = self.controller.focus_profile()
+                        if not profile_matches_account(
+                            self.controller.ocr(profile), account_name
+                        ):
+                            raise RuntimeError("返回的页面不是目标公众号列表")
+                    except RuntimeError as restore_error:
+                        stop_reason = "profile_restore_failed"
+                        self.progress("session_unavailable", {
+                            "error": str(restore_error),
+                        })
+                        halt = True
+                    restart_profile = True
                     if consecutive_failures >= 2:
                         stop_reason = "consecutive_article_failures"
                         halt = True
@@ -906,7 +1149,7 @@ class MacHumanAccountCollector:
                     "skipped_known_cards": skipped_known,
                     "complete": False,
                 })
-                if halt or new_in_run >= max_new_articles or attempts >= max_open_attempts or (
+                if halt or restart_profile or new_in_run >= max_new_articles or attempts >= max_open_attempts or (
                     max_articles is not None and len(completed_urls) >= max_articles
                 ):
                     break
