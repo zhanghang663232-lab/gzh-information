@@ -175,6 +175,32 @@ def account_name_from_profile(lines: list[OcrLine]) -> str:
     return "未知公众号"
 
 
+def profile_matches_account(lines: list[OcrLine], account_name: str) -> bool:
+    texts = {line.text.strip() for line in lines}
+    return account_name in texts and any("篇原创内容" in text for text in texts)
+
+
+def profile_identity_conflicts(lines: list[OcrLine], account_name: str) -> bool:
+    """Only judge identity when the profile header is actually visible."""
+    return any("篇原创内容" in line.text for line in lines) and not profile_matches_account(
+        lines, account_name
+    )
+
+
+class AccountMismatchError(RuntimeError):
+    """A clicked article belongs to another account; discard the viewport."""
+
+
+def article_matches_account(bottom_text: str, account_name: str) -> bool:
+    return account_name in {line.strip() for line in bottom_text.splitlines()}
+
+
+def meaningful_body(body: str) -> bool:
+    lines = [line.strip() for line in body.splitlines() if line.strip()]
+    non_urls = [line for line in lines if not re.fullmatch(r"https?://\S+", line)]
+    return len("".join(non_urls)) >= 80
+
+
 class MacHumanController:
     def __init__(self) -> None:
         if subprocess.run(
@@ -193,6 +219,22 @@ class MacHumanController:
 
     def activate(self) -> None:
         subprocess.run(["open", "-a", "WeChat"], check=False)
+        # Reopen moves an existing WeChat window back to the active macOS Space.
+        # NSRunningApplication.activateWithOptions_ alone may leave it off-screen.
+        subprocess.run(
+            ["osascript", "-e", 'tell application "WeChat" to reopen',
+             "-e", 'tell application "WeChat" to activate'],
+            capture_output=True, check=False, timeout=8,
+        )
+        apps = self.AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(
+            "com.tencent.xinWeChat"
+        )
+        options = (
+            self.AppKit.NSApplicationActivateAllWindows
+            | self.AppKit.NSApplicationActivateIgnoringOtherApps
+        )
+        for app in apps:
+            app.activateWithOptions_(options)
         time.sleep(0.6)
 
     def windows(self) -> list[Window]:
@@ -286,6 +328,19 @@ class MacHumanController:
             time.sleep(0.015)
         q.CGEventPost(q.kCGHIDEventTap, q.CGEventCreateMouseEvent(None, q.kCGEventLeftMouseUp, (x, end_y), q.kCGMouseButtonLeft))
 
+    def wheel(self, x: float, y: float, delta: int) -> None:
+        q = self.Quartz
+        q.CGEventPost(
+            q.kCGHIDEventTap,
+            q.CGEventCreateMouseEvent(None, q.kCGEventMouseMoved, (x, y), q.kCGMouseButtonLeft),
+        )
+        for _ in range(4):
+            event = q.CGEventCreateScrollWheelEvent(
+                None, q.kCGScrollEventUnitPixel, 1, int(delta / 4)
+            )
+            q.CGEventPost(q.kCGHIDEventTap, event)
+            time.sleep(0.06)
+
     def hotkey(self, keycode: int, flags: int) -> None:
         q = self.Quartz
         down = q.CGEventCreateKeyboardEvent(None, keycode, True)
@@ -328,6 +383,81 @@ class MacHumanController:
         self._raise(browser)
         return self.wait_window("微信 (窗口)")
 
+    def open_profile(self, url: str, account_name: str | None = None) -> Window:
+        """Restore the account profile from a public article in WeChat itself."""
+        def account_lines(lines: list[OcrLine]) -> list[OcrLine]:
+            if account_name:
+                return [line for line in lines if line.text.strip() == account_name]
+            metric_lines = [
+                line for line in lines
+                if "写留言" in line.text or "推荐" in line.text or "点赞" in line.text
+            ]
+            if not metric_lines:
+                return []
+            anchor = max(line.cy for line in metric_lines)
+            return [
+                line for line in lines
+                if abs(line.cy - anchor) < 35
+                and 1 < len(line.text.strip()) <= 30
+                and re.search(r"[\u4e00-\u9fff]", line.text)
+                and not any(word in line.text for word in ("写留言", "推荐", "点赞", "分享"))
+            ]
+
+        existing = self.window("公众号")
+        if existing:
+            self._raise(existing)
+            if account_name is not None and profile_matches_account(
+                self.ocr(existing), account_name
+            ):
+                return existing
+            self.hotkey(13, self.Quartz.kCGEventFlagMaskCommand)
+            time.sleep(0.8)
+        self.activate()
+        browser = self.window("微信 (窗口)")
+        if browser is not None:
+            self._raise(browser)
+            self.hotkey(13, self.Quartz.kCGEventFlagMaskCommand)
+            time.sleep(0.8)
+        main = self.wait_window("微信")
+        self._raise(main)
+        marker = url.rstrip("/").rsplit("/", 1)[-1]
+        links = [
+            line for line in self.ocr(main)
+            if "mp.weixin.qq.com" in line.text and marker in line.text
+        ]
+        if not links:
+            raise RuntimeError("微信主窗口中没有看到用于恢复的示例文章链接")
+        line = links[-1]
+        self.click(main.x + line.cx, main.y + line.cy)
+        browser = self.wait_window("微信 (窗口)", timeout=10)
+        time.sleep(1)
+        self._raise(browser)
+        lines = self.ocr(self.focus_browser())
+        names = account_lines(lines)
+        if not names:
+            self.page_bottom()
+            browser = self.focus_browser()
+            names = account_lines(self.ocr(browser))
+        if not names:
+            raise RuntimeError("示例文章页中没有找到目标公众号名称")
+        line = names[-1]
+        self.click(browser.x + line.cx, browser.y + line.cy)
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            profile = self.window("公众号")
+            if profile:
+                lines = self.ocr(profile)
+                ready = (
+                    profile_matches_account(lines, account_name)
+                    if account_name
+                    else account_name_from_profile(lines) != "未知公众号"
+                    and any("篇原创内容" in item.text for item in lines)
+                )
+                if ready:
+                    return profile
+            time.sleep(0.4)
+        raise RuntimeError("目标公众号主页未通过账号身份校验")
+
     def clipboard(self) -> str:
         board = self.AppKit.NSPasteboard.generalPasteboard()
         return str(board.stringForType_(self.AppKit.NSPasteboardTypeString) or "")
@@ -346,6 +476,7 @@ class MacHumanController:
         self.hotkey(53, 0)
         time.sleep(0.25)
         browser = self.focus_browser()
+        self.AppKit.NSPasteboard.generalPasteboard().clearContents()
         self.click(browser.x + browser.width - 28, browser.y + 21)
         time.sleep(0.3)
         deadline = time.monotonic() + 4
@@ -418,22 +549,15 @@ class MacHumanController:
 
     def scroll(self, amount: int = 1) -> bool:
         profile = self.focus_profile()
-        self.click(profile.x + profile.width - 5, profile.y + profile.height / 2)
-        time.sleep(0.18)
-        thumb = self._scrollbar_thumb(profile)
-        if thumb:
-            center = (thumb[0] + thumb[1]) / 2
-            step = max(60, min(110, 85 * max(1, abs(amount))))
-            target = min(profile.height - 40, center + step)
-            if target <= center + 2:
-                return False
-            self.drag(profile.x + profile.width - 5, profile.y + center, profile.y + target)
-            time.sleep(0.65)
-            return True
-        self.click(profile.x + 25, profile.y + profile.height / 2)
-        for _ in range(max(1, abs(amount))):
-            self.hotkey(121, 0)
-        time.sleep(0.65)
+        # A real wheel/trackpad event is required to make WeChat's virtualized
+        # article list request its next batch.  Dragging the temporary
+        # scrollbar thumb or pressing PageDown can stop at the loaded boundary.
+        self.wheel(
+            profile.x + profile.width / 2,
+            profile.y + profile.height * 0.72,
+            360 * max(1, abs(amount)),
+        )
+        time.sleep(0.9)
         return True
 
 
@@ -459,7 +583,9 @@ class MacHumanAccountCollector:
         except (OSError, ValueError, TypeError):
             return None
 
-    def _capture_card(self, profile: Window, card: ProfileCard) -> HumanCapture:
+    def _capture_card(
+        self, profile: Window, card: ProfileCard, expected_account: str
+    ) -> HumanCapture:
         self.controller.click(profile.x + card.click_x, profile.y + card.click_y)
         self.controller.wait_window("微信 (窗口)", timeout=7)
         time.sleep(0.5)
@@ -467,6 +593,10 @@ class MacHumanAccountCollector:
             url = self.controller.copy_link()
             body = self.controller.copy_page_text()
             bottom = self.controller.page_bottom()
+            if not article_matches_account(bottom, expected_account):
+                raise AccountMismatchError(
+                    f"文章作者不匹配：期望 {expected_account}，已拒绝入库"
+                )
             combined = body + "\n" + bottom
             comment_num = None
             if "暂无评论" in combined or "还没有留言" in combined:
@@ -484,7 +614,12 @@ class MacHumanAccountCollector:
             )
         finally:
             self.controller.close_article()
-            self.controller.focus_profile()
+            try:
+                self.controller.focus_profile()
+            except RuntimeError:
+                # A WeChat child window occasionally closes its parent profile
+                # as well.  The caller restores it from the seed article.
+                pass
 
     def _save(self, ws: Workspace, store: Store, account: Account, capture: HumanCapture) -> None:
         key = article_stable_key(url=capture.url)
@@ -504,12 +639,13 @@ class MacHumanAccountCollector:
             "shareNum": capture.share_num, "commentNum": capture.comment_num,
             "source": "mac_human_agent",
         })
+        body_ok = meaningful_body(capture.body)
         store.save_content(ContentSnapshot(
             article_key=key, title=capture.title, author=account.name,
             markdown=capture.body, source="mac_human_agent",
             checksum=hashlib.sha256(capture.body.encode()).hexdigest(),
-            status=Status.OK if capture.body.strip() else Status.MISSING,
-            reason="" if capture.body.strip() else "微信页面未复制到正文",
+            status=Status.OK if body_ok else Status.MISSING,
+            reason="" if body_ok else "微信页面未复制到有效正文",
         ), markdown_path=md_path)
         metric_status = Status.OK if capture.read_num is not None else Status.MISSING
         store.save_metrics(MetricSnapshot(
@@ -528,16 +664,25 @@ class MacHumanAccountCollector:
             "" if capture.comment_num == 0 else "桌面页面只能确认公开评论计数，评论明细尚未展开",
         )
 
-    def collect(self, url: str, output: Path, *, max_articles: int | None = None) -> Path:
+    def collect(
+        self, url: str, output: Path, *, max_articles: int | None = None,
+        account_name: str | None = None,
+    ) -> Path:
         self.controller.activate()
+        self.controller.open_profile(url, account_name)
         profile = self.controller.scroll_to_top()
         lines = self.controller.ocr(profile)
-        account_name = account_name_from_profile(lines)
+        observed_name = account_name_from_profile(lines)
+        if account_name is not None and observed_name != account_name:
+            raise AccountMismatchError(
+                f"公众号主页不匹配：期望 {account_name}，看到 {observed_name}"
+            )
+        account_name = observed_name
         total = self._target_count(lines) or self._previous_total(output, account_name)
         if not total:
             raise RuntimeError("未从公众号主页识别到文章总数，也没有可恢复的历史进度")
-        if max_articles:
-            total = min(total, max_articles)
+        if max_articles is not None and max_articles < 1:
+            raise ValueError("max_articles 必须大于零")
         account = Account(
             biz="human:" + hashlib.sha256(account_name.encode()).hexdigest()[:20],
             name=account_name, source_url=url, source="mac_human_agent", status=Status.OK,
@@ -556,30 +701,70 @@ class MacHumanAccountCollector:
         repeated = 0
         previous_fingerprint = ""
         attempts = 0
-        while len(completed_urls) < total and repeated < 8:
-            profile = self.controller.focus_profile()
+        identity_recoveries = 0
+        stop_reason = "viewport_repeated_without_new_articles"
+        profile_number = profile.number
+        while (
+            repeated < 30
+            and identity_recoveries < 3
+            and (max_articles is None or len(completed_urls) < max_articles)
+        ):
+            try:
+                profile = self.controller.focus_profile()
+            except RuntimeError:
+                self.controller.open_profile(url, account_name)
+                profile = self.controller.scroll_to_top()
+                profile_number = profile.number
+                previous_fingerprint = ""
+                repeated = 0
             lines = self.controller.ocr(profile)
+            if profile.number != profile_number or profile_identity_conflicts(lines, account_name):
+                identity_recoveries += 1
+                self.progress("identity_mismatch", {
+                    "expected": account_name,
+                    "observed": account_name_from_profile(lines),
+                })
+                self.controller.open_profile(url, account_name)
+                profile = self.controller.scroll_to_top()
+                profile_number = profile.number
+                previous_fingerprint = ""
+                repeated = 0
+                continue
             cards = parse_profile_cards(lines, profile.height)
-            fingerprint = hashlib.sha256("\n".join(card.title for card in cards).encode()).hexdigest()
+            fingerprint = hashlib.sha256("\n".join(
+                f"{card.title}|{card.read_num}|{card.like_num}" for card in cards
+            ).encode()).hexdigest()
             repeated = repeated + 1 if fingerprint == previous_fingerprint else 0
             previous_fingerprint = fingerprint
-            new_hint = False
-            for card in cards:
-                hint = f"{card.title}|{card.read_num}|{card.like_num}"
+            restart_profile = False
+            for index, card in enumerate(cards):
+                hint = f"{fingerprint}|{index}"
                 if hint in seen_hints:
                     continue
                 seen_hints.add(hint)
-                new_hint = True
                 attempts += 1
                 self.progress("human_article", {
                     "current": len(completed_urls) + 1, "total": total, "title": card.title,
                 })
                 try:
-                    capture = self._capture_card(profile, card)
+                    capture = self._capture_card(profile, card, account_name)
                     if capture.url in completed_urls:
                         continue
                     self._save(ws, store, account, capture)
                     completed_urls.add(capture.url)
+                    identity_recoveries = 0
+                except AccountMismatchError as exc:
+                    identity_recoveries += 1
+                    self.progress("identity_mismatch", {
+                        "expected": account_name, "observed": str(exc),
+                    })
+                    self.controller.open_profile(url, account_name)
+                    profile = self.controller.scroll_to_top()
+                    profile_number = profile.number
+                    previous_fingerprint = ""
+                    repeated = 0
+                    restart_profile = True
+                    break
                 except (RuntimeError, OSError, ValueError) as exc:
                     self.progress("human_retry", {
                         "title": card.title,
@@ -594,20 +779,48 @@ class MacHumanAccountCollector:
                     "declared_article_count": total,
                     "captured_article_count": len(completed_urls),
                     "attempts": attempts,
-                    "complete": len(completed_urls) >= total,
+                    "complete": False,
                 })
-                if len(completed_urls) >= total:
+                if max_articles is not None and len(completed_urls) >= max_articles:
+                    stop_reason = "article_limit_reached"
                     break
-                profile = self.controller.focus_profile()
-            if len(completed_urls) >= total:
+                try:
+                    profile = self.controller.focus_profile()
+                except RuntimeError:
+                    self.controller.open_profile(url, account_name)
+                    profile = self.controller.scroll_to_top()
+                    profile_number = profile.number
+                    previous_fingerprint = ""
+                    repeated = 0
+                    restart_profile = True
+                    break
+                if profile.number != profile_number or profile_identity_conflicts(
+                    self.controller.ocr(profile), account_name
+                ):
+                    identity_recoveries += 1
+                    self.progress("identity_mismatch", {
+                        "expected": account_name,
+                        "observed": "其他公众号",
+                    })
+                    self.controller.open_profile(url, account_name)
+                    profile = self.controller.scroll_to_top()
+                    profile_number = profile.number
+                    previous_fingerprint = ""
+                    repeated = 0
+                    restart_profile = True
+                    break
+            if max_articles is not None and len(completed_urls) >= max_articles:
                 break
+            if restart_profile:
+                continue
             if not self.controller.scroll():
+                stop_reason = "scroll_failed"
                 break
-            if not new_hint:
-                repeated += 1
+        if identity_recoveries >= 3:
+            stop_reason = "identity_recovery_limit"
         fingerprint = hashlib.sha256("\n".join(sorted(completed_urls)).encode()).hexdigest()
         store.set_checkpoint("mac_human_agent", account.biz, str(len(completed_urls)), fingerprint,
-                             len(completed_urls) >= total)
+                             False)
         export_all(store, ws.root)
         audit_workspace(store, ws.root)
         ws.write_json("audit/human-agent-progress.json", {
@@ -615,7 +828,12 @@ class MacHumanAccountCollector:
             "declared_article_count": total,
             "captured_article_count": len(completed_urls),
             "attempts": attempts,
-            "complete": len(completed_urls) >= total,
+            "complete": False,
+            "stop_reason": stop_reason,
         })
-        self.progress("complete", {"workspace": str(ws.root), "captured": len(completed_urls), "total": total})
+        final_stage = "incomplete"
+        self.progress(final_stage, {
+            "workspace": str(ws.root), "captured": len(completed_urls), "total": total,
+            "reason": stop_reason,
+        })
         return ws.root
