@@ -10,7 +10,7 @@ from .audit import audit_workspace
 from .exports import export_all
 from .proxy import MacProxyManager
 from .storage import Store
-from .workspace import Workspace
+from .workspace import Workspace, safe_name
 
 
 def _progress(stage: str, detail: dict) -> None:
@@ -23,9 +23,11 @@ def build_parser() -> argparse.ArgumentParser:
     collect = sub.add_parser("collect")
     collect.add_argument("--url", required=True)
     collect.add_argument("--output", type=Path, default=Path.home() / "Documents" / "gzh-information-data")
-    collect.add_argument("--max-articles", type=int, help=argparse.SUPPRESS)
+    collect.add_argument("--account-name", help="已在微信中打开的目标公众号名称")
+    collect.add_argument("--max-articles", type=int, help="试跑时最多保存的文章总数；不填则持续读取")
     resume = sub.add_parser("resume")
     resume.add_argument("--workspace", required=True, type=Path)
+    resume.add_argument("--max-articles", type=int, help="试跑时最多保存的文章总数；不填则持续读取")
     for name in ("audit", "export"):
         command = sub.add_parser(name)
         command.add_argument("--workspace", required=True, type=Path)
@@ -47,17 +49,27 @@ def main(argv: list[str] | None = None) -> int:
 
         path = MacHumanAccountCollector(_progress).collect(
             args.url, args.output, max_articles=args.max_articles,
+            account_name=args.account_name,
         )
         print(path)
     elif args.command == "resume":
         from .human_agent import MacHumanAccountCollector
 
         ws = Workspace.open(args.workspace)
-        accounts = Store(ws.database).rows("SELECT source_url FROM accounts LIMIT 1")
-        if not accounts or not accounts[0]["source_url"]:
-            raise RuntimeError("工作区没有保存起始文章链接")
+        accounts = Store(ws.database).rows(
+            """SELECT name, source_url FROM accounts
+               WHERE source='mac_human_agent' AND status='ok' AND biz LIKE 'human:%'"""
+        )
+        if (
+            len(accounts) != 1
+            or safe_name(accounts[0]["name"]) != ws.root.name
+            or not accounts[0]["source_url"]
+        ):
+            raise RuntimeError("工作区没有唯一且匹配的目标公众号及起始文章链接")
         MacHumanAccountCollector(_progress).collect(
             accounts[0]["source_url"], ws.root.parent,
+            account_name=accounts[0]["name"],
+            max_articles=args.max_articles,
         )
     elif args.command in {"audit", "export"}:
         ws = Workspace.open(args.workspace)
@@ -74,15 +86,26 @@ def main(argv: list[str] | None = None) -> int:
         except ImportError:
             accessibility = False
             screen_capture = False
-        checks = {
+        required = {
             "macOS": platform.system() == "Darwin",
             "WeChat": bool(shutil.which("open")),
             "accessibility_permission": accessibility,
             "screen_recording_permission": screen_capture,
             "python_3_12_plus": tuple(map(int, platform.python_version_tuple()[:2])) >= (3, 12),
         }
-        print(json.dumps(checks, ensure_ascii=False, indent=2))
-        return 0 if all(checks.values()) else 1
+        free_gib = round(shutil.disk_usage(Path.home()).free / (1024 ** 3), 1)
+        background = {
+            "cua_driver": shutil.which("cua-driver"),
+            "lume": shutil.which("lume"),
+            "tart": shutil.which("tart"),
+            "free_disk_gib": free_gib,
+            "vm_disk_ready": free_gib >= 35,
+            "recommended_mode": (
+                "isolated_macos_vm" if free_gib >= 35 else "foreground_resumable"
+            ),
+        }
+        print(json.dumps({"required": required, "background": background}, ensure_ascii=False, indent=2))
+        return 0 if all(required.values()) else 1
     elif args.command == "proxy":
         states = [args.state] if args.state else list(
             (Path.home() / "Documents" / "gzh-information-data").glob("*/runtime/proxy-state.json")
