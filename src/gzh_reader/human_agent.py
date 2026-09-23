@@ -6,6 +6,7 @@ import re
 import subprocess
 import sys
 import time
+from collections import Counter
 from collections.abc import Callable
 from dataclasses import dataclass
 from pathlib import Path
@@ -148,6 +149,20 @@ def parse_profile_cards(lines: list[OcrLine], window_height: float | None = None
         ))
         last_metric_y = line.cy
     return cards
+
+
+def card_signature(card: ProfileCard) -> tuple[str, int | None, int | None]:
+    """Conservative resume hint; never an article identity or completion proof."""
+    return (card.title.strip(), card.read_num, card.like_num)
+
+
+def unique_known_cards(rows: list[dict]) -> dict[tuple[str, int | None, int | None], str]:
+    matches: dict[tuple[str, int | None, int | None], set[str]] = {}
+    for row in rows:
+        signature = (str(row["title"] or "").strip(), row["readNum"], row["likeNum"])
+        if signature[0]:
+            matches.setdefault(signature, set()).add(str(row["url"]))
+    return {signature: next(iter(urls)) for signature, urls in matches.items() if len(urls) == 1}
 
 
 def account_name_from_profile(lines: list[OcrLine]) -> str:
@@ -366,8 +381,7 @@ class MacHumanController:
         if self.window("公众号") is None:
             self.activate()
         for viewer in [item for item in self.windows() if item.title == "图片和视频"]:
-            self._raise(viewer)
-            self.hotkey(13, self.Quartz.kCGEventFlagMaskCommand)
+            self._close_window(viewer)
             time.sleep(0.2)
         profile = self.wait_window("公众号")
         self._raise(profile)
@@ -379,6 +393,13 @@ class MacHumanController:
         browser = self.wait_window("微信 (窗口)")
         self._raise(browser)
         return self.wait_window("微信 (窗口)")
+
+    def _close_window(self, target: Window) -> None:
+        # Command-W goes to the global foreground window. Never send it if
+        # Accessibility could not raise the exact child window first.
+        if not self._raise(target):
+            raise RuntimeError(f"无法确认 {target.title} 窗口焦点，已拒绝关闭快捷键")
+        self.hotkey(13, self.Quartz.kCGEventFlagMaskCommand)
 
     def open_profile(self, url: str, account_name: str | None = None) -> Window:
         """Restore the account profile from a public article in WeChat itself."""
@@ -407,13 +428,12 @@ class MacHumanController:
                 self.ocr(existing), account_name
             ):
                 return existing
-            self.hotkey(13, self.Quartz.kCGEventFlagMaskCommand)
+            self._close_window(existing)
             time.sleep(0.8)
         self.activate()
         browser = self.window("微信 (窗口)")
         if browser is not None:
-            self._raise(browser)
-            self.hotkey(13, self.Quartz.kCGEventFlagMaskCommand)
+            self._close_window(browser)
             time.sleep(0.8)
         main = self.wait_window("微信")
         self._raise(main)
@@ -498,12 +518,11 @@ class MacHumanController:
         return "\n".join(line.text for line in self.ocr(self.focus_browser()))
 
     def close_article(self) -> None:
-        try:
-            self.focus_browser()
-            self.hotkey(13, self.Quartz.kCGEventFlagMaskCommand)
-            time.sleep(0.35)
-        except RuntimeError:
-            pass
+        browser = self.window("微信 (窗口)")
+        if browser is None:
+            return
+        self._close_window(browser)
+        time.sleep(0.35)
 
     def scroll_to_top(self) -> Window:
         profile = self.focus_profile()
@@ -667,8 +686,10 @@ class MacHumanAccountCollector:
 
     def collect(
         self, url: str, output: Path, *, max_articles: int | None = None,
-        account_name: str | None = None,
+        account_name: str | None = None, max_new_articles: int = 5,
     ) -> Path:
+        if not 1 <= max_new_articles <= 10:
+            raise ValueError("本轮最多新增篇数必须在 1 到 10 之间")
         self.controller.activate()
         self.controller.open_profile(url, account_name)
         profile = self.controller.scroll_to_top()
@@ -691,17 +712,36 @@ class MacHumanAccountCollector:
         ws = Workspace.create(output, account_name)
         store = Store(ws.database)
         store.upsert_account(account)
-        completed_urls = {
-            row["url"] for row in store.rows(
-                """SELECT DISTINCT a.url FROM articles a
-                   JOIN content_snapshots c ON c.article_key=a.stable_key AND c.status='ok'
-                   JOIN metric_snapshots m ON m.article_key=a.stable_key AND m.readNum IS NOT NULL"""
-            )
-        }
+        completed_rows = store.rows(
+            """SELECT a.url, a.title, m.readNum, m.likeNum FROM articles a
+               JOIN metric_snapshots m ON m.id = (
+                 SELECT MAX(m2.id) FROM metric_snapshots m2
+                 WHERE m2.article_key=a.stable_key AND m2.readNum IS NOT NULL)
+               WHERE a.biz=? AND EXISTS (
+                 SELECT 1 FROM content_snapshots c
+                 WHERE c.article_key=a.stable_key AND c.status='ok')""",
+            (account.biz,),
+        )
+        completed_urls = {row["url"] for row in completed_rows}
+        known_cards = unique_known_cards(completed_rows)
+        ambiguous_cards: set[tuple[str, int | None, int | None]] = set()
+        hints_path = ws.root / "audit" / "human-agent-card-hints.json"
+        try:
+            hints_payload = json.loads(hints_path.read_text(encoding="utf-8"))
+            card_hints = hints_payload.get("cards", {}) if hints_payload.get("biz") == account.biz else {}
+            if not isinstance(card_hints, dict):
+                card_hints = {}
+        except (OSError, ValueError, TypeError, AttributeError):
+            card_hints = {}
         seen_hints: set[str] = set()
         repeated = 0
         previous_fingerprint = ""
         attempts = 0
+        new_in_run = 0
+        skipped_known = 0
+        consecutive_failures = 0
+        last_open_at = 0.0
+        max_open_attempts = 3 * max_new_articles
         identity_recoveries = 0
         stop_reason = "viewport_repeated_without_new_articles"
         halt = False
@@ -710,12 +750,19 @@ class MacHumanAccountCollector:
             repeated < 30
             and identity_recoveries < 3
             and (max_articles is None or len(completed_urls) < max_articles)
+            and new_in_run < max_new_articles
+            and attempts < max_open_attempts
         ):
             try:
                 profile = self.controller.focus_profile()
             except RuntimeError:
-                self.controller.open_profile(url, account_name)
-                profile = self.controller.scroll_to_top()
+                try:
+                    self.controller.open_profile(url, account_name)
+                    profile = self.controller.scroll_to_top()
+                except RuntimeError as exc:
+                    stop_reason = "wechat_session_unavailable"
+                    self.progress("session_unavailable", {"error": str(exc)})
+                    break
                 profile_number = profile.number
                 previous_fingerprint = ""
                 repeated = 0
@@ -731,8 +778,13 @@ class MacHumanAccountCollector:
                     "expected": account_name,
                     "observed": account_name_from_profile(lines),
                 })
-                self.controller.open_profile(url, account_name)
-                profile = self.controller.scroll_to_top()
+                try:
+                    self.controller.open_profile(url, account_name)
+                    profile = self.controller.scroll_to_top()
+                except RuntimeError as exc:
+                    stop_reason = "wechat_session_unavailable"
+                    self.progress("session_unavailable", {"error": str(exc)})
+                    break
                 profile_number = profile.number
                 previous_fingerprint = ""
                 repeated = 0
@@ -746,40 +798,72 @@ class MacHumanAccountCollector:
                 except RuntimeError as exc:
                     self.progress("model_review_failed", {"error": str(exc)})
             fingerprint = hashlib.sha256("\n".join(
-                f"{card.title}|{card.read_num}|{card.like_num}" for card in cards
+                card.title for card in cards
             ).encode()).hexdigest()
             repeated = repeated + 1 if fingerprint == previous_fingerprint else 0
             previous_fingerprint = fingerprint
             restart_profile = False
+            card_counts = Counter(card_signature(card) for card in cards)
             for index, card in enumerate(cards):
+                if attempts >= max_open_attempts or new_in_run >= max_new_articles:
+                    break
                 hint = f"{fingerprint}|{index}"
                 if hint in seen_hints:
                     continue
                 seen_hints.add(hint)
+                signature = card_signature(card)
+                known_url = card_hints.get(hint) or (
+                    known_cards.get(signature) if card_counts[signature] == 1 else None
+                )
+                if known_url in completed_urls:
+                    skipped_known += 1
+                    continue
+                since_open = time.monotonic() - last_open_at
+                if last_open_at and since_open < 8:
+                    time.sleep(8 - since_open)
                 attempts += 1
+                last_open_at = time.monotonic()
                 self.progress("human_article", {
                     "current": len(completed_urls) + 1, "total": total, "title": card.title,
+                    "opens_in_run": attempts, "max_opens": max_open_attempts,
                 })
                 try:
                     capture = self._capture_card(profile, card, account_name)
-                    if capture.url in completed_urls:
-                        continue
-                    self._save(ws, store, account, capture)
-                    completed_urls.add(capture.url)
+                    card_hints[hint] = capture.url
+                    ws.write_json("audit/human-agent-card-hints.json", {
+                        "biz": account.biz, "cards": card_hints,
+                    })
+                    if capture.url not in completed_urls:
+                        self._save(ws, store, account, capture)
+                        completed_urls.add(capture.url)
+                        new_in_run += 1
+                        if known_cards.get(signature) not in (None, capture.url):
+                            known_cards.pop(signature, None)
+                            ambiguous_cards.add(signature)
+                        elif signature not in ambiguous_cards:
+                            known_cards[signature] = capture.url
+                    consecutive_failures = 0
                     identity_recoveries = 0
                 except AccountMismatchError as exc:
                     identity_recoveries += 1
                     self.progress("identity_mismatch", {
                         "expected": account_name, "observed": str(exc),
                     })
-                    self.controller.open_profile(url, account_name)
-                    profile = self.controller.scroll_to_top()
+                    try:
+                        self.controller.open_profile(url, account_name)
+                        profile = self.controller.scroll_to_top()
+                    except RuntimeError as restore_error:
+                        stop_reason = "wechat_session_unavailable"
+                        self.progress("session_unavailable", {"error": str(restore_error)})
+                        halt = True
+                        break
                     profile_number = profile.number
                     previous_fingerprint = ""
                     repeated = 0
                     restart_profile = True
                     break
                 except (RuntimeError, OSError, ValueError) as exc:
+                    consecutive_failures += 1
                     self.progress("human_retry", {
                         "title": card.title,
                         "error": f"{type(exc).__name__}: {exc}",
@@ -788,21 +872,33 @@ class MacHumanAccountCollector:
                         self.controller.close_article()
                     except RuntimeError:
                         pass
+                    if consecutive_failures >= 2:
+                        stop_reason = "consecutive_article_failures"
+                        halt = True
                 ws.write_json("audit/human-agent-progress.json", {
                     "account": account_name,
                     "declared_article_count": total,
                     "captured_article_count": len(completed_urls),
                     "attempts": attempts,
+                    "new_in_run": new_in_run,
+                    "skipped_known_cards": skipped_known,
                     "complete": False,
                 })
-                if max_articles is not None and len(completed_urls) >= max_articles:
-                    stop_reason = "article_limit_reached"
+                if halt or new_in_run >= max_new_articles or attempts >= max_open_attempts or (
+                    max_articles is not None and len(completed_urls) >= max_articles
+                ):
                     break
                 try:
                     profile = self.controller.focus_profile()
                 except RuntimeError:
-                    self.controller.open_profile(url, account_name)
-                    profile = self.controller.scroll_to_top()
+                    try:
+                        self.controller.open_profile(url, account_name)
+                        profile = self.controller.scroll_to_top()
+                    except RuntimeError as exc:
+                        stop_reason = "wechat_session_unavailable"
+                        self.progress("session_unavailable", {"error": str(exc)})
+                        halt = True
+                        break
                     profile_number = profile.number
                     previous_fingerprint = ""
                     repeated = 0
@@ -823,24 +919,47 @@ class MacHumanAccountCollector:
                         "expected": account_name,
                         "observed": "其他公众号",
                     })
-                    self.controller.open_profile(url, account_name)
-                    profile = self.controller.scroll_to_top()
+                    try:
+                        self.controller.open_profile(url, account_name)
+                        profile = self.controller.scroll_to_top()
+                    except RuntimeError as exc:
+                        stop_reason = "wechat_session_unavailable"
+                        self.progress("session_unavailable", {"error": str(exc)})
+                        halt = True
+                        break
                     profile_number = profile.number
                     previous_fingerprint = ""
                     repeated = 0
                     restart_profile = True
                     break
             if max_articles is not None and len(completed_urls) >= max_articles:
+                stop_reason = "article_limit_reached"
                 break
             if halt:
                 break
+            if new_in_run >= max_new_articles:
+                stop_reason = "batch_new_limit"
+                break
+            if attempts >= max_open_attempts:
+                stop_reason = "batch_open_limit"
+                break
             if restart_profile:
                 continue
-            if not self.controller.scroll():
+            try:
+                scrolled = self.controller.scroll()
+            except RuntimeError as exc:
+                stop_reason = "wechat_session_unavailable"
+                self.progress("session_unavailable", {"error": str(exc)})
+                break
+            if not scrolled:
                 stop_reason = "scroll_failed"
                 break
         if identity_recoveries >= 3:
             stop_reason = "identity_recovery_limit"
+        elif new_in_run >= max_new_articles:
+            stop_reason = "batch_new_limit"
+        elif attempts >= max_open_attempts:
+            stop_reason = "batch_open_limit"
         fingerprint = hashlib.sha256("\n".join(sorted(completed_urls)).encode()).hexdigest()
         store.set_checkpoint("mac_human_agent", account.biz, str(len(completed_urls)), fingerprint,
                              False)
@@ -851,12 +970,15 @@ class MacHumanAccountCollector:
             "declared_article_count": total,
             "captured_article_count": len(completed_urls),
             "attempts": attempts,
+            "new_in_run": new_in_run,
+            "skipped_known_cards": skipped_known,
             "complete": False,
             "stop_reason": stop_reason,
         })
         final_stage = "incomplete"
         self.progress(final_stage, {
             "workspace": str(ws.root), "captured": len(completed_urls), "total": total,
-            "reason": stop_reason,
+            "reason": stop_reason, "new_in_run": new_in_run,
+            "opens_in_run": attempts, "skipped_known_cards": skipped_known,
         })
         return ws.root
