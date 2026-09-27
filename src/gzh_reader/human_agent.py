@@ -465,6 +465,7 @@ class MacHumanController:
         self.AX = ApplicationServices
         self.Quartz = Quartz
         self.tabbed_profile_account: str | None = None
+        self.active_article_number: int | None = None
 
     def activate(self) -> None:
         apps = self.AppKit.NSRunningApplication.runningApplicationsWithBundleIdentifier_(
@@ -526,6 +527,16 @@ class MacHumanController:
 
     def browser_by_number(self, number: int) -> Window | None:
         return next((item for item in self.browser_windows() if item.number == number), None)
+
+    def active_article_window(self) -> Window | None:
+        """Never substitute a different same-named WebView for a verified article."""
+        number = getattr(self, "active_article_number", None)
+        if number is None:
+            return None
+        browser = self.browser_by_number(number)
+        if browser is None:
+            raise ArticleNotOpenedError("已验证的文章窗口消失或不可截图；拒绝切换到其他同名窗口")
+        return browser
 
     def login_required(self) -> bool:
         # The security notice appears in a small, untitled WeChat window.
@@ -763,6 +774,15 @@ class MacHumanController:
 
     def focus_browser(self) -> Window:
         self.require_active_session()
+        active = self.active_article_window()
+        if active is not None:
+            if not self._raise(active):
+                raise RuntimeError("无法前置已验证的文章窗口；已停止")
+            browser = self.active_article_window()
+            if browser is None:
+                raise ArticleNotOpenedError("已验证的文章窗口消失")
+            self.require_foreground(browser)
+            return browser
         if getattr(self, "tabbed_profile_account", None):
             browser = self.wait_window("微信 (窗口)")
             if not self._raise(browser):
@@ -841,8 +861,11 @@ class MacHumanController:
         return None
 
     def wait_article(self, title: str, timeout: float = 8) -> Window:
+        self.active_article_number = None
         if not getattr(self, "tabbed_profile_account", None):
-            return self.wait_window("微信 (窗口)", timeout=timeout)
+            browser = self.wait_window("微信 (窗口)", timeout=timeout)
+            self.active_article_number = browser.number
+            return browser
         deadline = time.monotonic() + timeout
         last_state = "window_missing"
         tabs: list[str] = []
@@ -892,6 +915,7 @@ class MacHumanController:
                     last_state != "profile_still_active"
                     and article_title_visible(title, lines)
                 ):
+                    self.active_article_number = browser.number
                     return browser
                 unconfirmed_observations += 1
                 if unconfirmed_observations % 3 == 0:
@@ -952,6 +976,7 @@ class MacHumanController:
                     continue
                 raise
             if article_title_visible(title, lines):
+                self.active_article_number = current.number
                 return current
         raise ArticleNotOpenedError("当前页面未能确认目标文章标题；未选择其他标签")
 
@@ -1124,7 +1149,7 @@ class MacHumanController:
         return str(board.stringForType_(self.AppKit.NSPasteboardTypeString) or "")
 
     def dismiss_miniprogram_prompt(self) -> bool:
-        browser = self.window("微信 (窗口)")
+        browser = self.active_article_window() or self.window("微信 (窗口)")
         if browser is None:
             return False
         lines = self.ocr(browser)
@@ -1175,7 +1200,7 @@ class MacHumanController:
         return body
 
     def copy_link(self, title: str | None = None) -> str:
-        browser = self.window("微信 (窗口)")
+        browser = self.active_article_window() or self.window("微信 (窗口)")
         if browser is None:
             raise RuntimeError("文章窗口已消失，拒绝操作菜单")
         self.require_foreground(browser)
@@ -1231,7 +1256,7 @@ class MacHumanController:
         browser = self.focus_browser()
         self.hotkey(125, self.Quartz.kCGEventFlagMaskCommand)
         time.sleep(0.6)
-        current = self.window("微信 (窗口)")
+        current = self.active_article_window() or self.window("微信 (窗口)")
         if current is None or current.number != browser.number:
             raise RuntimeError("读取页尾时文章窗口已改变；拒绝使用其他页面的指标")
         # A short article's footer may contain fewer than 50 OCR characters.
@@ -1240,13 +1265,15 @@ class MacHumanController:
 
     def close_article(self) -> None:
         self.require_active_session()
-        browser = self.window("微信 (窗口)")
+        browser = self.active_article_window() or self.window("微信 (窗口)")
         if browser is None:
             return
         account_name = getattr(self, "tabbed_profile_account", None)
         if account_name and profile_matches_account(self.ocr(browser), account_name):
+            self.active_article_number = None
             return
         self._close_window(browser)
+        self.active_article_number = None
         time.sleep(0.35)
 
     def scroll_to_top(self) -> Window:

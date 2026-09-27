@@ -6,6 +6,7 @@ import pytest
 from pathlib import Path
 
 from gzh_reader.human_agent import (
+    ArticleNotOpenedError,
     HumanCapture,
     MacHumanAccountCollector,
     MacHumanController,
@@ -322,6 +323,35 @@ def test_wait_article_accepts_visible_title_on_short_image_article():
     controller.ocr = lambda window, **kwargs: [line("亲人入狱后最该知道的事情", 90)]
     controller.click = lambda *args: pytest.fail("已显示的标题不应导致重复点击")
     assert controller.wait_article("亲人入狱后最该知道的事情") == browser
+    assert controller.active_article_number == browser.number
+
+
+def test_pinned_article_window_never_falls_back_to_another_same_named_window():
+    target = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True, 1)
+    other = Window(43, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True, 1)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.active_article_number = target.number
+    controller.windows = lambda: [other, target]
+    assert controller.active_article_window() == target
+    controller.windows = lambda: [other]
+    with pytest.raises(ArticleNotOpenedError, match="拒绝切换到其他同名窗口"):
+        controller.active_article_window()
+
+
+def test_focus_browser_uses_verified_article_window_even_when_other_is_first():
+    target = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True, 1)
+    other = Window(43, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True, 1)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.active_article_number = target.number
+    controller.tabbed_profile_account = "监所家属"
+    controller.require_active_session = lambda: None
+    controller.windows = lambda: [other, target]
+    controller.window = lambda title: other
+    raised = []
+    controller._raise = lambda window: raised.append(window.number) or True
+    controller.require_foreground = lambda window: None
+    assert controller.focus_browser() == target
+    assert raised == [target.number]
 
 
 def test_scrolled_tab_still_matches_only_its_own_account():
