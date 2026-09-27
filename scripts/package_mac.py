@@ -15,7 +15,13 @@ import zipfile
 
 REQUIRED_FILES = (
     "README.md", "LICENSE", "pyproject.toml", "uv.lock", ".gitignore",
-    "安装.command", "启动.command", "docs/mac-delivery.md",
+    "安装.command", "启动.command",
+    "docs/mac-delivery.md", "docs/background-agent.md",
+    "docs/batch-agent-plan.md", "docs/execution-plan-v3.md",
+    "docs/feasibility-gate.md", "docs/first-principles-review.md",
+    "docs/logout-investigation.md", "docs/mac-ui-poc.md",
+    "docs/acceptance/run-2026-09-26.md",
+    "docs/acceptance/run-2026-09-27.md",
     "scripts/package_mac.py",
 )
 FORBIDDEN_PARTS = {

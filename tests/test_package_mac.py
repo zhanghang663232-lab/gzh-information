@@ -36,6 +36,7 @@ def test_package_excludes_runtime_and_has_reproducible_checksums_and_permissions
     (source / "cookie.py").write_text("private data")
     (source / "runtime").mkdir()
     (source / "runtime" / "state.py").write_text("private data")
+    (tmp_path / "docs" / "doubao-handoff.md").write_text("personal notes")
     archive = package_mac.build_package(tmp_path)
     first = archive.read_bytes()
     assert package_mac.build_package(tmp_path).read_bytes() == first
@@ -43,6 +44,8 @@ def test_package_excludes_runtime_and_has_reproducible_checksums_and_permissions
         prefix = bundle.namelist()[0].split("/")[0] + "/"
         names = {name.removeprefix(prefix) for name in bundle.namelist()}
         assert names == set(package_mac.REQUIRED_FILES) | {"src/gzh_reader/__init__.py", "PACKAGE-MANIFEST.json"}
+        assert "docs/acceptance/run-2026-09-27.md" in names
+        assert "docs/doubao-handoff.md" not in names
         manifest = json.loads(bundle.read(prefix + "PACKAGE-MANIFEST.json"))
         for path, digest in manifest["files"].items():
             assert hashlib.sha256(bundle.read(prefix + path)).hexdigest() == digest
