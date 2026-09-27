@@ -12,6 +12,11 @@
 | [草稿 PR #2](https://github.com/zhanghang663232-lab/gzh-information/pull/2) | 未合并 | 审阅 v2 代码与测试 |
 | [旧版 wechat-archive](wechat-archive/README.md) | 仅保留作历史实验 | 公开专辑或导出服务路线；不代表 Mac v2 |
 
+## 故障与构建记录
+
+- [从第一性原理到 Mac v2 的完整构建复盘](https://github.com/zhanghang663232-lab/gzh-information/blob/codex/v2-macos-validated/docs/build-history.md)
+- [给低成本模型执行的故障手册](https://github.com/zhanghang663232-lab/gzh-information/blob/codex/v2-macos-validated/docs/troubleshooting.md)
+
 ## 给人和 AI 助手的起点
 
 1. 在 GitHub 页面切换到 **`codex/v2-macos-validated`** 分支，再阅读该分支的 [README](https://github.com/zhanghang663232-lab/gzh-information/blob/codex/v2-macos-validated/README.md) 与 [Agent 起步说明](https://github.com/zhanghang663232-lab/gzh-information/blob/codex/v2-macos-validated/docs/agent-start.md)。
