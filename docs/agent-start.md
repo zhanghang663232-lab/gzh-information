@@ -2,6 +2,8 @@
 
 本文件是**操作检查表**，不是“全量完成”声明。仓库默认 `main` 目前仍保留旧版 `wechat-archive`；当前 Mac 程序位于 `codex/v2-macos-validated` 分支。开始前先确认当前 README 第一行是 `# gzh-information v2`，并且根目录有 `安装.command`、`启动.command` 和 `src/gzh_reader/`。若只看到 `wechat-archive/scripts/archive_account.py`，你拿错了版本，先切换分支；不要索取 `down.mptext.top` API key 来替代当前路径。
 
+用户此次要求豆包尝试**整个账号**时，直接按 [整账号执行入口](doubao-full-account-runbook.md) 的批次与验收规则推进；本页保留为通用起步检查表。
+
 第一次接手先读 [构建复盘](build-history.md) 和 [故障手册](troubleshooting.md)。它们区分已确认的故障、仍未证实的原因和当前停止条件；不要只凭一份旧交接记录推断当前状态。
 
 ## 一次小批量验证

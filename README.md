@@ -2,11 +2,11 @@
 
 > **先确认分支。** GitHub 默认 `main` 是旧版实验；Mac 桌面微信方案在 [`codex/v2-macos-validated`](https://github.com/zhanghang663232-lab/gzh-information/tree/codex/v2-macos-validated)。请从这个分支下载 ZIP。旧 `wechat-archive/` 位于 `main`，不在本 v2 分支内，不要用它的导出服务脚本验证 Mac 方案。v2 的 [草稿 PR #2](https://github.com/zhanghang663232-lab/gzh-information/pull/2) 尚未合并；这不是“已全量读取”的发布版。
 
-首次使用请看下方“双击使用”。豆包、DeepSeek、Codex 等接手时先读 [AGENTS.md](AGENTS.md) 和 [文档索引](docs/README.md)，再依据 [故障手册](docs/troubleshooting.md) 处理具体错误。
+**要让豆包尝试整个账号：直接从 [豆包整账号执行入口](docs/doubao-full-account-runbook.md) 开始。** 它包含本次 Netskao 示例、单篇验证、分批续读、停止条件和全量验收。首次使用也可看下方“双击使用”。其他 Agent 先读 [AGENTS.md](AGENTS.md) 和 [文档索引](docs/README.md)。
 
 | 能力 | 当前状态 |
 | --- | --- |
-| Mac 微信界面读取正文 | 曾完成目标账号单轮 10 篇小样本；新版微信 4.x 的窗口/复制链接回归仍需重新实机验证 |
+| Mac 微信界面读取正文 | 曾完成目标账号单轮 10 篇小样本；新版微信 4.x 已加入逐屏 OCR 兜底，但真实链接复制与新版本单篇链路仍需重新实机验证 |
 | 整个账号历史文章 | **未完成**；当前没有可证明的完整列表末尾 |
 | 阅读、点赞、转发、评论等 | 分字段记录；分享、旧点赞和公开评论明细尚未通过验收 |
 | DeepSeek / 豆包 | 可选的公开列表 OCR 复核和受限排序适配器；不能替代本机电脑操作，真实豆包连接尚未验证 |
@@ -30,7 +30,7 @@
    ↓
 Vision OCR 识别历史文章卡片，Quartz 模拟点击与滚动
    ↓
-从微信内置浏览器复制真实链接与完整渲染文本
+从微信文章菜单复制真实链接；正文优先复制，失败时逐屏 OCR 并验证页尾
    ↓
 读取主页/文章底部公开显示的互动字段
    ↓
@@ -44,7 +44,7 @@ SQLite 合并、续传、覆盖率审计、JSONL/CSV/Markdown/Obsidian 导出
 1. 确认已切到 `codex/v2-macos-validated` 分支，从该分支下载 ZIP 并解压，或使用同版 Apple Silicon 源码体验包；双击 `安装.command`。不要下载默认 `main` 分支。
 2. 在 Mac 微信中打开目标文章，点击公众号名称进入账号主页；核对主页名称。
 3. 双击 `启动.command`，在中文向导中填写文章链接、主页名称和输出目录。
-4. 保留默认的“本轮最多新增 5 篇”进行试跑；“工作区累计保存上限”可留空。勾选桌面操作确认并开始。
+4. 首次将“本轮最多新增”设为 **1 篇**；真实链接、正文首尾和账号身份核对成功后，再逐轮改为 5 篇、10 篇。“工作区累计保存上限”留空。勾选桌面操作确认并开始。
 5. 查看工作区 `audit/coverage.json`。试跑确认后可用下方 `resume` 命令继续读取。
 
 默认采集不读取 Cookie、Credential 或 API key，也不会修改 HTTP、HTTPS 或 SOCKS 代理。可选的模型复核会在本次运行中读取用户输入的 API key，但不会持久化。
@@ -62,7 +62,7 @@ SQLite 合并、续传、覆盖率审计、JSONL/CSV/Markdown/Obsidian 导出
 ## 命令行
 
 ```bash
-gzh-reader collect --url '<公众号文章链接>' --account-name '<微信主页名称>' --max-new-articles 5 --output '<目录>'
+gzh-reader collect --url '<公众号文章链接>' --account-name '<微信主页名称>' --max-new-articles 1 --output '<目录>'
 gzh-reader resume --workspace '<已有账号目录>' --max-new-articles 5
 gzh-reader resume --workspace '<已有账号目录>'
 gzh-reader recover-open --title '<当前文章完整标题>' --account-name '<公众号名>' --url '<起始文章链接>' --output '<目录>'
@@ -86,7 +86,7 @@ gzh-reader proxy restore --state '<proxy-state.json>'
 
 ```text
 <输出目录>/<公众号名>/
-  raw/          列表响应、文章 HTML 与规范化 Markdown
+  raw/          桌面界面采集的文章记录及来源收据
   database/     唯一规范化状态库 archive.sqlite3
   exports/      JSONL 与 CSV
   obsidian/     公众号首页、索引和文章正文
@@ -107,7 +107,7 @@ gzh-reader proxy restore --state '<proxy-state.json>'
 
 - 微信不同版本的界面坐标、OCR 结果和文章卡片布局可能变化；状态机保留失败项并可从断点重试。
 - 每个列表视口和每篇文章都强制校验目标公众号名称；发现串号立即拒绝入库并从样例链接恢复。
-- 2026-09-27 历史实机单轮 10 篇端到端正文小样本通过：10 次打开、10 个不同 URL、10 份通过最低正文文件检查，目标工作区累计 66 份可核查正文；这是当时版本的可行性证据，不证明每篇全文无遗漏，更不等于 302 篇全量。该 10 篇的阅读、点赞、评论计数均有值，分享数均缺失；`oldLikeNum` 与公开评论明细仍未达到目标。随后微信 4.x 的窗口/复制链接流程出现新回归，最近一次豆包运行新增 0 篇；当前修复已通过自动测试，但尚未重新通过单篇实机链路。详见 [验收记录](docs/acceptance/run-2026-09-27.md) 和 [故障手册](docs/troubleshooting.md)。
+- 2026-09-27 历史实机单轮 10 篇端到端正文小样本通过：10 次打开、10 个不同 URL、10 份通过最低正文文件检查，目标工作区累计 66 份可核查正文；这是当时版本的可行性证据，不证明每篇全文无遗漏，更不等于 302 篇全量。该 10 篇的阅读、点赞、评论计数均有值，分享数均缺失；`oldLikeNum` 与公开评论明细仍未达到目标。随后微信 4.x 的窗口/复制链接流程出现新回归；豆包在另一个账号 Netskao 的报告中新增 0 篇。针对报告的修复已通过自动测试和 CI，但尚未重新通过单篇实机链路。详见 [豆包整账号执行入口](docs/doubao-full-account-runbook.md)、[验收记录](docs/acceptance/run-2026-09-27.md) 和 [故障手册](docs/troubleshooting.md)。
 - 首次试跑需要人在微信中打开目标账号主页，并填写主页名称。只粘贴链接就自动导航到主页仍是后续工作。
 - 长批次曾在微信 OCR/窗口操作阶段停滞；Vision OCR 现有 12 秒子进程硬超时，其他窗口操作的长批次恢复能力仍需实机验证。
 - 用户观察到连续读取约 30 篇后微信退出登录；原因尚未证实。程序现在限制每轮新增、打开次数和连续失败，避免重复打开已完成卡片，但不能保证微信不会再次要求登录。
