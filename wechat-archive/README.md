@@ -1,4 +1,6 @@
-# 微信公众号公开文章归档
+# 微信公众号公开文章归档（旧版实验）
+
+> **注意：这不是 Mac 桌面微信批量读取 v2。** 本目录是早期独立脚本，`archive_account.py` 需要第三方导出服务的有效 API key；不要据此判断 v2 是否可用。Mac v2 请切换到 [`codex/v2-macos-validated` 分支](https://github.com/zhanghang663232-lab/gzh-information/tree/codex/v2-macos-validated)，先看该分支的 README 和 Agent 起步说明。v2 仍处于小批量验收阶段，尚未证明全量完成。
 
 可复现、可暂停的公开文章归档流程：公开专辑 HTML → URL 去重 → 批量正文提取 → Obsidian 索引 → 覆盖率/敏感参数审计。
 
