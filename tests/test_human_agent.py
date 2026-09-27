@@ -207,6 +207,27 @@ def test_copy_link_rejects_menu_on_other_article_tab():
         controller.copy_link(title)
 
 
+def test_copy_link_identifies_ai_agreement_without_accepting_it(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 1022, 768, 0, 123)
+    title = "亲人刚进监狱那几个月，家属千万别做这件事"
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.window = lambda name: browser
+    controller.require_foreground = lambda window: None
+    controller.dismiss_miniprogram_prompt = lambda: False
+    controller.article_menu_center = lambda window: (835, 24)
+    controller.ocr = lambda window, **kwargs: (
+        [line("微信小微功能服务协议", 250)]
+        if kwargs.get("visible") and "region" not in kwargs else
+        [] if kwargs.get("visible") else
+        [line(title[:18], 10, 680), line(title, 100, 300)]
+    )
+    controller.click = lambda x, y: None
+    controller.hotkey = lambda key, flags: pytest.fail("协议不能被自动接受或拒绝")
+    monkeypatch.setattr("gzh_reader.human_agent.time.monotonic", iter([0, 5]).__next__)
+    with pytest.raises(RuntimeError, match="未同意或拒绝"):
+        controller.copy_link(title)
+
+
 def test_target_tab_requires_unique_distinctive_title():
     tabs = [line("监所家属 - 搜一搜", 10, 90), line("监所家属", 10, 305),
             line("监所家属 - 搜一搜", 10, 500),
@@ -237,11 +258,12 @@ def test_menu_must_be_inside_observed_article_tab():
 
 def test_menu_validation_ignores_wechat_ai_toolbar_but_not_another_tab():
     title = "亲人刚进监狱那几个月，家属千万别做这件事"
-    target = line(title[:18], 10, 680)
+    target = line(title[:18], 10, 700)
     ai_control = OcrLine("••向AI", 972, 10, 55, 20)
-    assert menu_matches_article_tab(title, [target, ai_control], 1077, 1010)
+    assert not menu_matches_article_tab(title, [target, ai_control], 1077, 998)
+    assert menu_matches_article_tab(title, [target, ai_control], 1077, 1036)
     other_tab = line("另一篇文章标题", 10, 890)
-    assert not menu_matches_article_tab(title, [target, other_tab], 1077, 1010)
+    assert not menu_matches_article_tab(title, [target, other_tab], 1077, 1036)
 
 
 def test_account_tab_allows_ocr_prefix_but_not_search_tab():
@@ -507,6 +529,7 @@ def test_tabbed_profile_is_not_closed_as_article_window():
     browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
     controller = MacHumanController.__new__(MacHumanController)
     controller.window = lambda title: browser if title == "微信 (窗口)" else None
+    controller.windows = lambda: [browser]
     controller.activate = lambda: None
     controller._raise = lambda window: True
     controller.ocr = lambda window, **kwargs: [line("监所家属", 90), line("301篇原创内容", 190)]
@@ -515,12 +538,38 @@ def test_tabbed_profile_is_not_closed_as_article_window():
     assert controller.tabbed_profile_account == "监所家属"
 
 
+def test_tabbed_profile_finds_verified_second_browser_not_first_error_page():
+    error = Window(41, "微信 (窗口)", 0, 0, 440, 751, 0, 123, True)
+    profile = Window(42, "微信 (窗口)", 500, 0, 900, 800, 0, 123, True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.windows = lambda: [error, profile]
+    controller.ocr = lambda window: (
+        [line("页面无法访问", 100)] if window.number == 41 else
+        [line("监所家属", 90), line("301篇原创内容", 190)]
+    )
+    controller._raise = lambda window: window.number == 42
+    controller.click = lambda x, y: pytest.fail("已找到主页时不应点击")
+    assert controller._tabbed_profile("监所家属") == profile
+
+
+def test_tabbed_profile_refuses_two_matching_windows_without_clicking():
+    first = Window(41, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    second = Window(42, "微信 (窗口)", 500, 0, 900, 800, 0, 123, True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.windows = lambda: [first, second]
+    controller.ocr = lambda window: [line("监所家属", 90), line("301篇原创内容", 190)]
+    controller._raise = lambda window: pytest.fail("歧义窗口不能前置")
+    assert controller._tabbed_profile("监所家属") is None
+    assert controller.profile_probe_reason == "multiple_matching_profiles"
+
+
 def test_open_profile_stops_on_blank_wechat_window_without_clicking():
     main = Window(1, "微信", 0, 0, 880, 640, 0, 42, True)
     controller = MacHumanController.__new__(MacHumanController)
     controller.require_active_session = lambda: None
     controller._tabbed_profile = lambda account: None
     controller.window = lambda title: main if title == "微信" else None
+    controller.windows = lambda: []
     controller.activate = lambda: None
     controller.wait_window = lambda title: main
     controller._raise = lambda window: True
@@ -536,6 +585,7 @@ def test_open_profile_stops_before_ocr_when_main_window_is_unshared():
     controller.require_active_session = lambda: None
     controller._tabbed_profile = lambda account: None
     controller.window = lambda title: main if title == "微信" else None
+    controller.windows = lambda: []
     controller.activate = lambda: None
     controller.wait_window = lambda title: main
     controller._raise = lambda window: True
@@ -551,6 +601,7 @@ def test_open_profile_stops_before_ocr_on_offscreen_article_window():
     controller.require_active_session = lambda: None
     controller._tabbed_profile = lambda account: None
     controller.window = lambda title: browser if title == "微信 (窗口)" else None
+    controller.windows = lambda: [browser]
     controller.ocr = lambda window: pytest.fail("不可见窗口不能截图")
     controller.click = lambda x, y: pytest.fail("不可见窗口不能盲点")
     with pytest.raises(RuntimeError, match="不在当前可见桌面"):
@@ -669,6 +720,7 @@ def test_tabbed_profile_fallback_never_accepts_author_only(monkeypatch):
     browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
     controller = MacHumanController.__new__(MacHumanController)
     controller.window = lambda title: browser if title == "微信 (窗口)" else None
+    controller.windows = lambda: [browser]
     controller.ocr = lambda window: [line("监所家属", 720), line("正文内容" * 20, 400)]
     controller._raise = lambda window: True
     clicks = []
@@ -679,27 +731,34 @@ def test_tabbed_profile_fallback_never_accepts_author_only(monkeypatch):
     assert clicks == []
 
 
-def test_open_profile_closes_only_verified_target_article_tab():
+def test_open_profile_does_not_close_article_when_footer_is_missing():
     browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
     controller = MacHumanController.__new__(MacHumanController)
-    controller.window = lambda title: browser if title == "微信 (窗口)" else None
-    closed = []
-    controller._tabbed_profile = lambda account: browser if closed else None
+    controller.require_active_session = lambda: None
+    controller._tabbed_profile = lambda account: None
+    controller.windows = lambda: [browser]
     controller.ocr = lambda window: [line("阅读 562", 480), line("监所家属", 500)]
-    controller._close_window = lambda window: closed.append(window)
-    assert controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属") == browser
-    assert closed == [browser]
-    assert controller.tabbed_profile_account == "监所家属"
+    controller._raise = lambda window: True
+    controller.require_foreground = lambda window: None
+    controller.Quartz = type("Q", (), {"kCGEventFlagMaskCommand": 1})
+    controller.hotkey = lambda key, flags: None
+    controller._close_window = lambda window: pytest.fail("不能关闭无法确认页尾的文章")
+    with pytest.raises(RuntimeError, match="页尾未能唯一确认"):
+        controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属")
 
 
 def test_open_profile_uses_verified_article_footer_link_before_closing(monkeypatch):
     browser = Window(42, "微信 (窗口)", 10, 20, 900, 800, 0, 123, True)
     controller = MacHumanController.__new__(MacHumanController)
     controller.window = lambda title: browser if title == "微信 (窗口)" else None
+    controller.windows = lambda: [browser]
     clicked = []
     controller._tabbed_profile = lambda account: browser if clicked else None
     controller.ocr = lambda window: [line("阅读 562", 680), line("监所家属", 720)]
     controller._raise = lambda window: True
+    controller.require_foreground = lambda window: None
+    controller.Quartz = type("Q", (), {"kCGEventFlagMaskCommand": 1})
+    controller.hotkey = lambda key, flags: None
     controller.click = lambda x, y: clicked.append((x, y))
     controller._close_window = lambda window: pytest.fail("不应关闭可读文章窗口")
     monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
@@ -707,6 +766,47 @@ def test_open_profile_uses_verified_article_footer_link_before_closing(monkeypat
     # 新版微信页尾账号名文字本身不可点，点击的是名称左侧的圆形头像
     assert clicked == [(2, 750)]
     assert controller.tabbed_profile_account == "监所家属"
+
+
+def test_open_profile_scrolls_only_unique_target_article_to_find_footer(monkeypatch):
+    error = Window(41, "微信 (窗口)", 0, 0, 440, 751, 0, 123, True)
+    article = Window(42, "微信 (窗口)", 500, 0, 900, 800, 0, 123, True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.require_active_session = lambda: None
+    controller.windows = lambda: [error, article]
+    events = []
+    controller._tabbed_profile = lambda account: article if "click" in events else None
+    controller._raise = lambda window: window.number == 42
+    controller.require_foreground = lambda window: events.append("foreground")
+    controller.Quartz = type("Q", (), {"kCGEventFlagMaskCommand": 1})
+    controller.hotkey = lambda key, flags: events.append("scroll")
+    controller.click = lambda x, y: events.append("click")
+    controller._close_window = lambda window: pytest.fail("不能关闭任何窗口")
+
+    def read(window):
+        if window.number == 41:
+            return [line("页面无法访问", 100)]
+        if "scroll" in events:
+            return [line("Netskao", 720, 80), line("点赞 2", 740)]
+        return [line("Netskao", 210, 80), line("正文" * 25, 400)]
+
+    controller.ocr = read
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    assert controller.open_profile("https://mp.weixin.qq.com/s/test", "Netskao") == article
+    assert events == ["foreground", "scroll", "foreground", "click"]
+
+
+def test_open_profile_refuses_multiple_target_articles_before_scrolling():
+    windows = [Window(n, "微信 (窗口)", n * 10, 0, 900, 800, 0, 123, True)
+               for n in (41, 42)]
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.require_active_session = lambda: None
+    controller.windows = lambda: windows
+    controller._tabbed_profile = lambda account: None
+    controller.ocr = lambda window: [line("Netskao", 210), line("正文" * 25, 400)]
+    controller._raise = lambda window: pytest.fail("歧义文章不能前置")
+    with pytest.raises(RuntimeError, match="无法唯一确认"):
+        controller.open_profile("https://mp.weixin.qq.com/s/test", "Netskao")
 
 
 def test_tabbed_close_refuses_when_profile_is_current():

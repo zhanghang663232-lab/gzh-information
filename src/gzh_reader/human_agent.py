@@ -160,6 +160,15 @@ def menu_matches_article_tab(
     # own tab, to the right of the visible title and before another tab label.
     if not target.x + 45 <= menu_x <= min(target.x + 345, window_width - 12):
         return False
+    # The WeChat 4.x AI control contains its own three dots. Do not let a
+    # visually detected glyph inside that observed control become a click.
+    if any(
+        line.cy < 52 and line.x >= window_width - 150
+        and "向AI" in line.text
+        and line.x - 8 <= menu_x <= line.x + line.width + 8
+        for line in lines
+    ):
+        return False
     later_labels = [
         line.x for line in lines
         if line.cy < 52 and line.x > target.x + 95
@@ -509,6 +518,15 @@ class MacHumanController:
         matches = [item for item in self.windows() if item.title == title and item.width >= min_width]
         return min(matches, key=lambda item: (not item.onscreen, item.layer, -item.width)) if matches else None
 
+    def browser_windows(self) -> list[Window]:
+        """Return readable WeChat browser windows without guessing which is active."""
+        return [item for item in self.windows()
+                if item.title == "微信 (窗口)" and item.width >= 300
+                and item.onscreen and item.sharing_state != 0]
+
+    def browser_by_number(self, number: int) -> Window | None:
+        return next((item for item in self.browser_windows() if item.number == number), None)
+
     def login_required(self) -> bool:
         # The security notice appears in a small, untitled WeChat window.
         # Detect it without clicking or accepting anything in the dialog.
@@ -769,37 +787,51 @@ class MacHumanController:
         self.hotkey(13, self.Quartz.kCGEventFlagMaskCommand)
 
     def _tabbed_profile(self, account_name: str) -> Window | None:
-        browser = self.window("微信 (窗口)")
-        if browser is None:
-            self.profile_probe_reason = "window_missing"
+        browsers = self.browser_windows()
+        if not browsers:
+            self.profile_probe_reason = "browser_offscreen_or_missing"
             return None
-        self._raise(browser)
-        browser = self.window("微信 (窗口)")
-        if browser is None or not browser.onscreen:
-            self.profile_probe_reason = "browser_offscreen"
+        observed: list[tuple[Window, list[OcrLine]]] = []
+        for browser in browsers:
+            try:
+                observed.append((browser, self.ocr(browser)))
+            except RuntimeError:
+                # A failed capture is not evidence that this is the target.
+                continue
+        profiles = [(browser, lines) for browser, lines in observed
+                    if profile_matches_account(lines, account_name)]
+        if len(profiles) > 1:
+            self.profile_probe_reason = "multiple_matching_profiles"
             return None
-        # A visible WebView can be absent from the AX window tree on WeChat
-        # 4.1.x. Reading this exact Quartz window for identity is safe even
-        # when AXRaise fails; clicks below still require a unique visible
-        # target, and their result is checked by OCR.
-        lines = self.ocr(browser)
-        if profile_matches_account(lines, account_name):
+        if len(profiles) == 1:
+            browser = profiles[0][0]
+            if not self._raise(browser):
+                self.profile_probe_reason = "profile_window_not_raised"
+                return None
+            browser = self.browser_by_number(browser.number)
+            if browser is None or not profile_matches_account(self.ocr(browser), account_name):
+                self.profile_probe_reason = "profile_changed_after_raise"
+                return None
             self.profile_probe_reason = "matched"
             return browser
-        self.profile_probe_reason = "profile_ocr_no_match"
-        # New WeChat keeps the account tab beside the article tab in the same
-        # window. Only a visible, exact account-name tab near the top is safe
-        # to select; an author name in the article body is not enough.
-        tab = account_tab_line(account_name, lines)
-        if tab is None:
-            self.profile_probe_reason = "account_tab_not_identified"
+        # A visible WebView can be absent from the AX tree. Only an observed,
+        # unique account tab is a safe route to the profile.
+        tabs = [(browser, tab) for browser, lines in observed
+                if (tab := account_tab_line(account_name, lines)) is not None]
+        if len(tabs) != 1:
+            self.profile_probe_reason = (
+                "multiple_account_tabs" if tabs else "account_tab_not_identified"
+            )
             return None
-        click_x, click_y = tab.cx, tab.cy
+        browser, tab = tabs[0]
+        if not self._raise(browser):
+            self.profile_probe_reason = "account_tab_window_not_raised"
+            return None
         self.require_foreground(browser)
-        self.click(browser.x + click_x, browser.y + click_y)
+        self.click(browser.x + tab.cx, browser.y + tab.cy)
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
-            browser = self.window("微信 (窗口)")
+            browser = self.browser_by_number(browser.number)
             if browser is None:
                 return None
             if profile_matches_account(self.ocr(browser), account_name):
@@ -944,70 +976,68 @@ class MacHumanController:
                 and not any(word in line.text for word in ("写留言", "推荐", "点赞", "分享"))
             ]
 
-        initial_browser = self.window("微信 (窗口)") if account_name else None
         if account_name:
             tabbed = self._tabbed_profile(account_name)
             if tabbed is not None:
                 self.tabbed_profile_account = account_name
                 return tabbed
-            initial_browser = self.window("微信 (窗口)")
-            if initial_browser is not None:
-                if not initial_browser.onscreen:
+            browsers = self.browser_windows()
+            if browsers:
+                articles: list[Window] = []
+                for candidate in browsers:
+                    try:
+                        lines = self.ocr(candidate)
+                    except RuntimeError:
+                        continue
+                    if article_matches_account(
+                        "\n".join(line.text for line in lines), account_name
+                    ):
+                        articles.append(candidate)
+                if len(articles) != 1:
                     raise RuntimeError(
-                        "微信文章窗口存在但不在当前可见桌面，无法截图；已停止且未盲点。"
-                        "请手动在微信打开一篇目标公众号文章，确认文章窗口可见后重试"
+                        "可见微信窗口中无法唯一确认目标公众号文章；已停止，未关闭或点击其他窗口"
+                        f"（候选 {len(articles)} 个；{getattr(self, 'profile_probe_reason', 'unknown')}）"
                     )
-                # The current WeChat build may expose the article but not its
-                # account tab.  A verified footer link is a safer route to
-                # the profile than closing the only readable article window
-                # and falling back to an unshared chat window.
-                article_lines = self.ocr(initial_browser)
+                article = articles[0]
+                if not self._raise(article):
+                    raise RuntimeError("无法前置唯一的目标文章窗口；已停止")
+                self.require_foreground(article)
+                # The account footer is usually below a long article. Move
+                # only the verified article to its bottom, then inspect the
+                # same exact Quartz window before clicking its avatar.
+                self.hotkey(125, self.Quartz.kCGEventFlagMaskCommand)
+                time.sleep(0.6)
+                article = self.browser_by_number(article.number)
+                if article is None:
+                    raise RuntimeError("滚动后目标文章窗口不可见；已停止")
                 footer_links = [
-                    line for line in article_lines
+                    line for line in self.ocr(article)
                     if line.text.strip() == account_name
-                    and line.cy > initial_browser.height * 0.7
+                    and line.cy > article.height * 0.7
                 ]
-                if len(footer_links) == 1:
-                    if not self._raise(initial_browser):
-                        raise RuntimeError("无法前置目标文章窗口，拒绝点击公众号入口")
-                    # WeChat 4.1.x: the footer account *name* text is not a
-                    # link; only the circular avatar just to its left opens the
-                    # profile. The avatar center is about one avatar width
-                    # (~1.4x the name line height) left of the name's left edge.
-                    name_line = footer_links[0]
-                    avatar_x = name_line.x - max(22.0, name_line.height * 1.4)
-                    self.click(
-                        initial_browser.x + avatar_x,
-                        initial_browser.y + name_line.cy,
-                    )
-                    deadline = time.monotonic() + 8
-                    while time.monotonic() < deadline:
-                        tabbed = self._tabbed_profile(account_name)
-                        if tabbed is not None:
-                            self.tabbed_profile_account = account_name
-                            return tabbed
-                        time.sleep(0.2)
-                    raise RuntimeError("已点击文章页的公众号入口，但未能核对账号主页；已停止")
-                # If the user left a verified article of this account open,
-                # close only that active article tab and re-check the profile.
-                # This avoids blind clicks at a fixed tab coordinate when a
-                # newer WeChat version has reflowed the tab strip.
-                visible_text = "\n".join(
-                    line.text for line in self.ocr(initial_browser)
-                )
-                if article_matches_account(visible_text, account_name):
-                    self._close_window(initial_browser)
-                    deadline = time.monotonic() + 5
-                    while time.monotonic() < deadline:
-                        tabbed = self._tabbed_profile(account_name)
-                        if tabbed is not None:
-                            self.tabbed_profile_account = account_name
-                            return tabbed
-                        time.sleep(0.2)
+                if len(footer_links) != 1:
+                    raise RuntimeError("文章页尾未能唯一确认目标公众号入口；已停止，未点击头像")
+                self.require_foreground(article)
+                name_line = footer_links[0]
+                avatar_x = name_line.x - max(22.0, name_line.height * 1.4)
+                self.click(article.x + avatar_x, article.y + name_line.cy)
+                deadline = time.monotonic() + 8
+                while time.monotonic() < deadline:
+                    tabbed = self._tabbed_profile(account_name)
+                    if tabbed is not None:
+                        self.tabbed_profile_account = account_name
+                        return tabbed
+                    time.sleep(0.2)
+                raise RuntimeError("已点击经核对的公众号头像，但未能确认主页；已停止")
+            if any(item.title == "微信 (窗口)" and not item.onscreen
+                   for item in self.windows()):
                 raise RuntimeError(
-                    "新版微信标签页中未能核对目标公众号主页；已停止，未切换聊天主窗口或关闭标签页"
-                    f"（{getattr(self, 'profile_probe_reason', 'unknown')}）"
+                    "微信文章窗口存在但不在当前可见桌面，无法截图；已停止且未盲点。"
+                    "请手动在微信打开一篇目标公众号文章，确认文章窗口可见后重试"
                 )
+            if any(item.title == "微信 (窗口)" and item.onscreen
+                   and item.sharing_state == 0 for item in self.windows()):
+                raise RuntimeError("微信文章窗口未向系统共享画面；已停止且未尝试截图或点击")
         existing = self.window("公众号")
         if existing:
             self._raise(existing)
@@ -1178,6 +1208,14 @@ class MacHumanController:
                 if line is None:
                     time.sleep(0.15)
         if line is None:
+            visible_text = "".join(
+                item.text for item in self.ocr(browser, visible=True)
+            )
+            if "微信小微" in visible_text and "协议" in visible_text:
+                raise RuntimeError(
+                    "误触微信『向AI』服务协议；已停止，未同意或拒绝。"
+                    "请手动关闭弹窗后检查文章菜单位置"
+                )
             raise RuntimeError("文章菜单未显示复制链接，已停止")
         self.require_foreground(browser)
         self.AppKit.NSPasteboard.generalPasteboard().clearContents()
