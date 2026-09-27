@@ -1288,15 +1288,20 @@ class MacHumanController:
                 if line is None:
                     time.sleep(0.15)
         if line is None:
-            visible_text = "".join(
-                item.text for item in self.ocr(browser, visible=True)
-            )
+            # The dropdown may open to either side of its tab when the
+            # window is resized. Read the already-open full foreground once
+            # before declaring a geometry-dependent crop failure; this does
+            # not send another click or search another tab.
+            visible_lines = self.ocr(browser, visible=True)
+            line = copy_link_menu_line(visible_lines)
+            visible_text = "".join(item.text for item in visible_lines)
             if "微信小微" in visible_text and "协议" in visible_text:
                 raise RuntimeError(
                     "误触微信『向AI』服务协议；已停止，未同意或拒绝。"
                     "请手动关闭弹窗后检查文章菜单位置"
                 )
-            raise RuntimeError("文章菜单未显示复制链接，已停止")
+            if line is None:
+                raise RuntimeError("文章菜单未显示复制链接，已停止")
         self.require_foreground(browser)
         self.AppKit.NSPasteboard.generalPasteboard().clearContents()
         self.click(browser.x + line.cx, browser.y + line.cy)

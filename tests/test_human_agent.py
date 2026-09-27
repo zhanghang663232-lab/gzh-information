@@ -231,6 +231,34 @@ def test_copy_link_identifies_ai_agreement_without_accepting_it(monkeypatch):
         controller.copy_link(title)
 
 
+def test_copy_link_reads_open_menu_outside_initial_crop(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 1022, 768, 0, 123)
+    title = "亲人刚进监狱那几个月，家属千万别做这件事"
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.window = lambda name: browser
+    controller.require_foreground = lambda window: None
+    controller.dismiss_miniprogram_prompt = lambda: False
+    controller.article_menu_center = lambda window, expected, lines: (835, 24)
+    controller.ocr = lambda window, **kwargs: (
+        [] if "region" in kwargs else
+        [line("复制链接", 150, 780), line("刷新", 190, 780),
+         line("调整文字大小", 230, 780)] if kwargs.get("visible") else
+        [line(title[:18], 10, 680), line(title, 100, 300)]
+    )
+    clicks = []
+    controller.click = lambda x, y: clicks.append((x, y))
+    controller.clipboard = lambda: "https://mp.weixin.qq.com/s/verified" if len(clicks) == 2 else ""
+
+    class Board:
+        def clearContents(self):
+            pass
+
+    controller.AppKit = type("A", (), {"NSPasteboard": type("P", (), {"generalPasteboard": lambda: Board()})})
+    monkeypatch.setattr("gzh_reader.human_agent.time.monotonic", iter([0, 5]).__next__)
+    assert controller.copy_link(title) == "https://mp.weixin.qq.com/s/verified"
+    assert len(clicks) == 2
+
+
 def test_target_tab_requires_unique_distinctive_title():
     tabs = [line("监所家属 - 搜一搜", 10, 90), line("监所家属", 10, 305),
             line("监所家属 - 搜一搜", 10, 500),
