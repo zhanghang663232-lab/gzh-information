@@ -88,14 +88,22 @@ def probe_wechat(controller=None) -> dict:
         controller = MacHumanController()
     try:
         controller.activate()
+        windows = controller.windows()
         candidates = [
-            item for item in controller.windows()
+            item for item in windows
             if item.onscreen and item.width >= 300
             and item.title in {"微信", "微信 (窗口)", "公众号"}
         ]
         if not candidates:
+            offscreen_article = any(
+                item.title == "微信 (窗口)" and item.width >= 300
+                and not item.onscreen for item in windows
+            )
             return {"window_visible": False, "capture_readable": False,
-                    "reason": "微信内容窗口当前不可见"}
+                    "reason": (
+                        "微信文章窗口存在但不在当前可见桌面；请手动在微信打开目标文章"
+                        if offscreen_article else "微信内容窗口当前不可见"
+                    )}
         window = max(candidates, key=lambda item: item.width * item.height)
         line_count = len(controller.ocr(window))
         display_lines = None

@@ -158,12 +158,15 @@ def menu_matches_article_tab(
     target = max(tabs, key=lambda line: line.x)
     # Tab widths vary with window size, but the active ellipsis is inside its
     # own tab, to the right of the visible title and before another tab label.
-    if not target.x + 45 <= menu_x <= min(target.x + 345, window_width - 80):
+    if not target.x + 45 <= menu_x <= min(target.x + 345, window_width - 12):
         return False
     later_labels = [
         line.x for line in lines
         if line.cy < 52 and line.x > target.x + 95
         and len(line.text.strip()) >= 4
+        # WeChat 4.x OCR can read the adjacent "向AI" toolbar control as
+        # "••向AI". It is not another article tab.
+        and not (line.x >= window_width - 150 and "向AI" in line.text)
     ]
     return not later_labels or menu_x < min(later_labels)
 
@@ -770,14 +773,15 @@ class MacHumanController:
         if browser is None:
             self.profile_probe_reason = "window_missing"
             return None
-        raised = self._raise(browser)
+        self._raise(browser)
+        browser = self.window("微信 (窗口)")
+        if browser is None or not browser.onscreen:
+            self.profile_probe_reason = "browser_offscreen"
+            return None
         # A visible WebView can be absent from the AX window tree on WeChat
         # 4.1.x. Reading this exact Quartz window for identity is safe even
         # when AXRaise fails; clicks below still require a unique visible
         # target, and their result is checked by OCR.
-        if not raised and not browser.onscreen:
-            self.profile_probe_reason = "window_not_raised_or_onscreen"
-            return None
         lines = self.ocr(browser)
         if profile_matches_account(lines, account_name):
             self.profile_probe_reason = "matched"
@@ -946,7 +950,13 @@ class MacHumanController:
             if tabbed is not None:
                 self.tabbed_profile_account = account_name
                 return tabbed
+            initial_browser = self.window("微信 (窗口)")
             if initial_browser is not None:
+                if not initial_browser.onscreen:
+                    raise RuntimeError(
+                        "微信文章窗口存在但不在当前可见桌面，无法截图；已停止且未盲点。"
+                        "请手动在微信打开一篇目标公众号文章，确认文章窗口可见后重试"
+                    )
                 # The current WeChat build may expose the article but not its
                 # account tab.  A verified footer link is a safer route to
                 # the profile than closing the only readable article window

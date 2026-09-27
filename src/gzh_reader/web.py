@@ -57,7 +57,7 @@ h1{margin-top:0}label{display:block;margin:18px 0 7px;font-weight:650}input[type
 <label>文章链接</label><input id="url" type="text" placeholder="https://mp.weixin.qq.com/s?...">
 <label>公众号名称（与微信主页一致）</label><input id="account_name" type="text" placeholder="例如：监所家属">
 <label>工作区累计保存上限（可留空）</label><input id="max_articles" type="number" min="1" placeholder="留空；每轮仍受下面的新增上限保护">
-<label>本轮最多新增篇数（1-10，建议 5）</label><input id="max_new_articles" type="number" min="1" max="10" value="5">
+<label>本轮最多新增篇数（1-10，建议 5；不是整个账号的上限）</label><input id="max_new_articles" type="number" min="1" max="10" value="5">
 <label>输出目录</label><input id="output" type="text" value="__OUTPUT__">
 <button id="visual_check" type="button">检查能否读取微信画面</button><span id="visual_status"></span>
 <label class="check"><input id="deepseek_review" type="checkbox"> OCR 无法识别文章卡片时，最多调用所选模型 5 次复核公开列表文字（不发送正文或截图）</label>

@@ -59,3 +59,21 @@ def test_wechat_visual_probe_names_unshared_window():
     result = probe_wechat(Controller())
     assert result["sharing_state"] == 0
     assert "未向系统共享画面" in result["reason"]
+
+
+def test_wechat_visual_probe_identifies_offscreen_article_window():
+    window = Window(4, "微信 (窗口)", 915, 136, 440, 751, 0, 123, False, 1)
+
+    class Controller:
+        def activate(self):
+            pass
+
+        def windows(self):
+            return [window]
+
+        def ocr(self, item):
+            raise AssertionError("offscreen window must not be captured")
+
+    result = probe_wechat(Controller())
+    assert result["capture_readable"] is False
+    assert "不在当前可见桌面" in result["reason"]
