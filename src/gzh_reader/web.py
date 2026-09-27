@@ -53,9 +53,9 @@ HTML = """<!doctype html><html lang="zh-CN"><head><meta charset="utf-8">
 main{max-width:760px;margin:48px auto;background:white;padding:36px;border-radius:20px;box-shadow:0 10px 40px #173b2418}
 h1{margin-top:0}label{display:block;margin:18px 0 7px;font-weight:650}input[type=text],input[type=password]{width:100%;box-sizing:border-box;padding:13px;border:1px solid #c7d2cb;border-radius:10px;font-size:16px}
 .check{font-weight:400}.warning{background:#fff8e3;padding:14px;border-radius:10px;margin-top:18px}button{margin-top:22px;background:#137c45;color:white;border:0;border-radius:11px;padding:14px 22px;font-size:16px;cursor:pointer}button:disabled{opacity:.5}#status{margin-top:24px;white-space:pre-wrap;background:#eff7f1;padding:16px;border-radius:10px}</style></head>
-<body><main><h1>公众号读取试跑</h1><p>先在 Mac 微信打开目标公众号主页，核对名称；试跑通过后可以从同一工作区续采。</p>
+<body><main><h1>公众号读取试跑</h1><p>支持任意公开公众号。先在 Mac 微信打开目标公众号主页；程序只在主页身份可核对时开始。试跑通过后可以从同一工作区续采。</p>
 <label>文章链接</label><input id="url" type="text" placeholder="https://mp.weixin.qq.com/s?...">
-<label>公众号名称（与微信主页一致）</label><input id="account_name" type="text" placeholder="例如：监所家属">
+<label>公众号名称（可留空；填写时须与微信主页一致）</label><input id="account_name" type="text" placeholder="留空则从唯一可见的公众号主页识别">
 <label>工作区累计保存上限（可留空）</label><input id="max_articles" type="number" min="1" placeholder="留空；每轮仍受下面的新增上限保护">
 <label>本轮最多新增篇数（1-10，建议 5；不是整个账号的上限）</label><input id="max_new_articles" type="number" min="1" max="10" value="5">
 <label>输出目录</label><input id="output" type="text" value="__OUTPUT__">

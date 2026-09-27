@@ -15,6 +15,8 @@ def test_home_and_foreground_consent_gate():
     assert "豆包（火山方舟）" in home.text
     assert "本轮最多新增篇数" in home.text
     assert "检查能否读取微信画面" in home.text
+    assert "支持任意公开公众号" in home.text
+    assert "例如：监所家属" not in home.text
     STATE.update({"stage": "idle", "detail": {}, "running": False})
     response = client.post("/api/collect", json={
         "url": "https://mp.weixin.qq.com/s?__biz=b",

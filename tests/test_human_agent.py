@@ -919,6 +919,36 @@ def test_open_profile_refuses_multiple_target_articles_before_scrolling():
         controller.open_profile("https://mp.weixin.qq.com/s/test", "Netskao")
 
 
+def test_blank_account_name_accepts_only_unique_verified_profile():
+    article = Window(41, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    profile = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.require_active_session = lambda: None
+    controller.browser_windows = lambda: [article, profile]
+    controller.window = lambda title: None
+    controller.ocr = lambda window: (
+        [line("Netskao", 60), line("110篇原创内容", 110)]
+        if window.number == 42 else [line("文章正文" * 20, 400)]
+    )
+    controller._raise = lambda window: window.number == 42
+    controller._close_window = lambda window: pytest.fail("留空名称不能关闭文章窗口")
+    assert controller.open_profile("https://mp.weixin.qq.com/s/test") == profile
+    assert controller.tabbed_profile_account == "Netskao"
+
+
+def test_blank_account_name_refuses_article_only_without_closing():
+    article = Window(41, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.require_active_session = lambda: None
+    controller.browser_windows = lambda: [article]
+    controller.window = lambda title: None
+    controller.ocr = lambda window: [line("Netskao", 700), line("文章正文" * 20, 400)]
+    controller._raise = lambda window: pytest.fail("不能前置未经核对的窗口")
+    controller._close_window = lambda window: pytest.fail("不能关闭文章窗口")
+    with pytest.raises(RuntimeError, match="必须有且只有一个"):
+        controller.open_profile("https://mp.weixin.qq.com/s/test")
+
+
 def test_tabbed_close_refuses_when_profile_is_current():
     browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123)
     controller = MacHumanController.__new__(MacHumanController)

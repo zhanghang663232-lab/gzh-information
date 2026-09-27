@@ -1036,6 +1036,35 @@ class MacHumanController:
     def open_profile(self, url: str, account_name: str | None = None) -> Window:
         """Restore the account profile from a public article in WeChat itself."""
         self.require_active_session()
+        if not account_name:
+            # A blank name is supported when exactly one account profile is
+            # already visible. Never close an unrelated article to guess it.
+            candidates = self.browser_windows()
+            legacy = self.window("公众号")
+            if legacy is not None and legacy.number not in {w.number for w in candidates}:
+                candidates.append(legacy)
+            profiles: list[tuple[Window, str]] = []
+            for candidate in candidates:
+                try:
+                    lines = self.ocr(candidate)
+                except RuntimeError:
+                    continue
+                name = account_name_from_profile(lines)
+                if name != "未知公众号" and profile_matches_account(lines, name):
+                    profiles.append((candidate, name))
+            if len(profiles) != 1:
+                raise RuntimeError(
+                    "未填写公众号名称时，必须有且只有一个可核对的公众号主页；"
+                    f"当前识别到 {len(profiles)} 个。已停止，未点击或关闭其他窗口"
+                )
+            profile, name = profiles[0]
+            if not self._raise(profile):
+                raise RuntimeError("无法前置唯一的公众号主页；已停止")
+            if not profile_matches_account(self.ocr(profile), name):
+                raise RuntimeError("公众号主页在前置后发生变化；已停止")
+            if profile.title == "微信 (窗口)":
+                self.tabbed_profile_account = name
+            return profile
         def account_lines(lines: list[OcrLine]) -> list[OcrLine]:
             if account_name:
                 return [line for line in lines if line.text.strip() == account_name]
