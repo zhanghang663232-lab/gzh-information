@@ -97,6 +97,20 @@ def test_account_identity_must_match_profile_and_article_author():
     assert not profile_matches_account(profile, "安徽监狱")
     assert article_matches_account("阅读 10\n监所家属\n写留言", "监所家属")
     assert not article_matches_account("阅读 10\n安徽监狱\n写留言", "监所家属")
+    assert article_matches_account("阅读 10\nNetskaot\n写留言", "Netskao")
+    assert not article_matches_account("阅读 10\nNetskaoTech\n写留言", "Netskao")
+
+
+def test_noisy_badge_footer_needs_clean_article_byline():
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.focus_browser = lambda: browser
+    controller.ocr = lambda window, **kwargs: [
+        line("Netskao 2026年9月26日", 115)
+    ]
+    controller.verify_article_account("Netskao")
+    with pytest.raises(RuntimeError, match="顶部未能核对"):
+        controller.verify_article_account("Netskaot")
 
 
 def test_explicit_wechat_relogin_notice_stops_before_profile_actions():
@@ -564,6 +578,41 @@ def test_raise_uses_wechat_main_process_for_detached_child_window(monkeypatch):
     assert actions == [("activate", 3), ("raise", "微信 (窗口)")]
 
 
+def test_raise_accepts_only_frontmost_exact_window_with_duplicate_titles(monkeypatch):
+    target = Window(7, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    other = Window(8, "微信 (窗口)", 50, 50, 900, 800, 0, 123, True)
+
+    class Running:
+        def processIdentifier(self):
+            return 123
+        def activateWithOptions_(self, options):
+            pass
+
+    class AppKit:
+        NSApplicationActivateAllWindows = 1
+        NSApplicationActivateIgnoringOtherApps = 2
+        class NSRunningApplication:
+            runningApplicationsWithBundleIdentifier_ = staticmethod(lambda bundle: [Running()])
+            runningApplicationWithProcessIdentifier_ = staticmethod(lambda pid: Running())
+
+    class AX:
+        kAXWindowsAttribute = "windows"
+        kAXTitleAttribute = "title"
+        AXUIElementCreateApplication = staticmethod(lambda pid: pid)
+        AXUIElementCopyAttributeValue = staticmethod(
+            lambda item, attr, unused: (0, [{"title": "微信 (窗口)"}] * 2)
+            if attr == "windows" else (0, item["title"])
+        )
+
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.AX = AX
+    controller.AppKit = AppKit
+    controller.windows = lambda: [target, other]
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    assert controller._raise(target)
+    assert not controller._raise(other)
+
+
 def test_activate_running_wechat_by_bundle_id_without_english_app_name(monkeypatch):
     calls = []
 
@@ -701,7 +750,7 @@ def test_open_profile_stops_before_ocr_when_main_window_is_unshared():
         controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属")
 
 
-def test_open_profile_stops_before_ocr_on_offscreen_article_window():
+def test_open_profile_ignores_old_offscreen_article_before_chat_link_lookup():
     browser = Window(42, "微信 (窗口)", 915, 136, 440, 751, 0, 123, False, 1)
     controller = MacHumanController.__new__(MacHumanController)
     controller.require_active_session = lambda: None
@@ -710,7 +759,11 @@ def test_open_profile_stops_before_ocr_on_offscreen_article_window():
     controller.windows = lambda: [browser]
     controller.ocr = lambda window: pytest.fail("不可见窗口不能截图")
     controller.click = lambda x, y: pytest.fail("不可见窗口不能盲点")
-    with pytest.raises(RuntimeError, match="不在当前可见桌面"):
+    controller.activate = lambda: None
+    controller.wait_window = lambda title: (_ for _ in ()).throw(
+        RuntimeError("当前没有可见微信主窗口")
+    )
+    with pytest.raises(RuntimeError, match="当前没有可见微信主窗口"):
         controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属")
 
 
@@ -959,6 +1012,22 @@ def test_tabbed_close_refuses_when_profile_is_current():
     controller.close_article()
 
 
+def test_tabbed_close_returns_to_verified_profile_without_command_w():
+    article = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    profile = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "Netskao"
+    controller.active_article_number = 42
+    controller.window = lambda title: article
+    controller.browser_by_number = lambda number: article
+    controller.ocr = lambda window: [line("文章正文" * 30, 200)]
+    controller.require_active_session = lambda: None
+    controller._tabbed_profile = lambda account: profile
+    controller._close_window = lambda window: pytest.fail("标签页模式不得关闭整个窗口")
+    controller.close_article()
+    assert controller.active_article_number is None
+
+
 def test_miniprogram_prompt_uses_cancel_only(monkeypatch):
     browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123)
     controller = MacHumanController.__new__(MacHumanController)
@@ -1034,8 +1103,14 @@ def test_copy_body_focuses_verified_paragraph_and_rejects_stale_link(monkeypatch
     assert controller.copy_page_text(title) == title + "\n" + "正文" * 100
     assert clicks == [(390, 210)]
     controller.clipboard = lambda: "https://mp.weixin.qq.com/s/old"
-    with pytest.raises(RuntimeError, match="有效正文"):
+    controller.ocr_page_text = lambda *args: (_ for _ in ()).throw(
+        RuntimeError("OCR 未确认页尾；正文未入库")
+    )
+    with pytest.raises(RuntimeError, match="OCR 未确认页尾"):
         controller.copy_page_text(title)
+    controller.ocr_page_text = lambda *args: title + "\n" + "逐屏识别的文章正文。" * 20
+    assert "逐屏识别" in controller.copy_page_text(title)
+    assert controller.last_body_source == "visible_ocr"
 
 
 def test_copy_body_refuses_to_click_when_paragraph_not_visible():
@@ -1045,8 +1120,46 @@ def test_copy_body_refuses_to_click_when_paragraph_not_visible():
     controller.dismiss_miniprogram_prompt = lambda: False
     controller.ocr = lambda window, **kwargs: [line("监狱里的生活是什么样子", 100, 300)]
     controller.click = lambda x, y: pytest.fail("没有正文时不应点击")
-    with pytest.raises(RuntimeError, match="没有可确认的正文段落"):
-        controller.copy_page_text("监狱里的生活是什么样子")
+    controller.ocr_page_text = lambda *args: "监狱里的生活是什么样子\n" + "后续逐屏识别正文。" * 20
+    assert "后续逐屏识别" in controller.copy_page_text("监狱里的生活是什么样子")
+
+
+def test_ocr_body_fallback_needs_repeated_footer(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    title = "苹果史上最贵新品要开卖了，强的离谱！"
+    first = [line(title, 100), line("这是一段足够长的文章正文，用于核对逐屏 OCR 是否保存了可见段落。", 180)]
+    last = [line("第二屏正文继续说明该产品的发布信息与配置变化。" * 5, 150),
+            line("阅读 101", 700)]
+    pages = iter([first, last, last, last])
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.browser_by_number = lambda number: browser
+    controller.require_foreground = lambda window: None
+    controller.dismiss_miniprogram_prompt = lambda: False
+    controller.ocr = lambda window: next(pages)
+    controller.hotkey = lambda *args: None
+    controller.wheel = lambda *args: None
+    controller.Quartz = type("Q", (), {"kCGEventFlagMaskCommand": 1})
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    body = controller.ocr_page_text(title, browser)
+    assert body.count("阅读 101") == 1
+    assert title in body
+
+
+def test_ocr_body_fallback_refuses_repeated_non_footer(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    title = "目标文章标题"
+    page = [line(title, 100), line("可见正文" * 30, 180)]
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.browser_by_number = lambda number: browser
+    controller.require_foreground = lambda window: None
+    controller.dismiss_miniprogram_prompt = lambda: False
+    controller.ocr = lambda window: page
+    controller.hotkey = lambda *args: None
+    controller.wheel = lambda *args: None
+    controller.Quartz = type("Q", (), {"kCGEventFlagMaskCommand": 1})
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    with pytest.raises(RuntimeError, match="连续重复"):
+        controller.ocr_page_text(title, browser)
 
 
 def test_page_bottom_accepts_short_footer_after_window_identity_check(monkeypatch):

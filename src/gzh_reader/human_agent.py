@@ -84,6 +84,7 @@ class HumanCapture:
     like_num: int | None
     share_num: int | None
     comment_num: int | None
+    body_source: str = "clipboard"
 
 
 class ArticleNotOpenedError(RuntimeError):
@@ -477,7 +478,16 @@ def is_login_required_text(text: str) -> bool:
 
 
 def article_matches_account(bottom_text: str, account_name: str) -> bool:
-    return account_name in {line.strip() for line in bottom_text.splitlines()}
+    return any(account_name_ocr_match(line, account_name)
+               for line in bottom_text.splitlines())
+
+
+def account_name_ocr_match(value: str, account_name: str) -> bool:
+    """Tolerate one observed verification-badge glyph, not arbitrary prefixes."""
+    observed = value.strip()
+    return observed == account_name or observed in {
+        account_name + suffix for suffix in ("t", "✓", "✔", "√")
+    }
 
 
 class MacHumanController:
@@ -597,7 +607,9 @@ class MacHumanController:
 
     def require_foreground(self, window: Window) -> None:
         """Check ownership without activating anything or dismissing a menu."""
-        current = next((item for item in self.windows() if item.number == window.number), None)
+        windows = self.windows()
+        current = next((item for item in windows if item.number == window.number), None)
+        same_title = [item for item in windows if item.onscreen and item.title == window.title]
         front = self.AppKit.NSWorkspace.sharedWorkspace().frontmostApplication()
         allowed = {window.pid} | {
             int(app.processIdentifier()) for app in
@@ -605,6 +617,7 @@ class MacHumanController:
                 "com.tencent.xinWeChat")
         }
         if (current is None or not current.onscreen or front is None
+                or not same_title or same_title[0].number != window.number
                 or int(front.processIdentifier()) not in allowed
                 or (current.x, current.y, current.width, current.height)
                 != (window.x, window.y, window.width, window.height)):
@@ -771,9 +784,8 @@ class MacHumanController:
                 time.sleep(0.25)
                 return True
         # WeChat 4.1.x may expose its WebView window to Quartz while AX omits
-        # it. Fall back only when the exact window is the sole visible match
-        # after activating its owning process; never infer focus from a title
-        # that could belong to another tab/window.
+        # it. Quartz reports windows in front-to-back order; with duplicate
+        # titles, proceed only when the exact verified window is frontmost.
         owner = self.AppKit.NSRunningApplication.runningApplicationWithProcessIdentifier_(
             target.pid
         )
@@ -788,7 +800,7 @@ class MacHumanController:
             item for item in self.windows()
             if item.onscreen and item.title == target.title
         ]
-        return len(visible) == 1 and visible[0].number == target.number
+        return bool(visible) and visible[0].number == target.number
 
     def focus_profile(self) -> Window:
         self.require_active_session()
@@ -1067,7 +1079,8 @@ class MacHumanController:
             return profile
         def account_lines(lines: list[OcrLine]) -> list[OcrLine]:
             if account_name:
-                return [line for line in lines if line.text.strip() == account_name]
+                return [line for line in lines
+                        if account_name_ocr_match(line.text, account_name)]
             metric_lines = [
                 line for line in lines
                 if "写留言" in line.text or "推荐" in line.text or "点赞" in line.text
@@ -1119,7 +1132,7 @@ class MacHumanController:
                     raise RuntimeError("滚动后目标文章窗口不可见；已停止")
                 footer_links = [
                     line for line in self.ocr(article)
-                    if line.text.strip() == account_name
+                    if account_name_ocr_match(line.text, account_name)
                     and line.cy > article.height * 0.7
                 ]
                 if len(footer_links) != 1:
@@ -1136,12 +1149,8 @@ class MacHumanController:
                         return tabbed
                     time.sleep(0.2)
                 raise RuntimeError("已点击经核对的公众号头像，但未能确认主页；已停止")
-            if any(item.title == "微信 (窗口)" and not item.onscreen
-                   for item in self.windows()):
-                raise RuntimeError(
-                    "微信文章窗口存在但不在当前可见桌面，无法截图；已停止且未盲点。"
-                    "请手动在微信打开一篇目标公众号文章，确认文章窗口可见后重试"
-                )
+            # Ignore old WebViews in another Space. The visible target or
+            # chat-link path below still needs independent verification.
             if any(item.title == "微信 (窗口)" and item.onscreen
                    and item.sharing_state == 0 for item in self.windows()):
                 raise RuntimeError("微信文章窗口未向系统共享画面；已停止且未尝试截图或点击")
@@ -1156,7 +1165,7 @@ class MacHumanController:
             time.sleep(0.8)
         self.activate()
         browser = self.window("微信 (窗口)")
-        if browser is not None:
+        if browser is not None and browser.onscreen:
             # WeChat 4.1.15 can show a public-account profile as a tab in this
             # same window. Closing it here would discard the exact profile the
             # user prepared, so stop until the tabbed flow has its own state
@@ -1265,7 +1274,8 @@ class MacHumanController:
             and line.text.strip() != title_line.text.strip()
         ]
         if not body_lines:
-            raise RuntimeError("文章首屏没有可确认的正文段落，拒绝盲点复制")
+            self.last_body_source = "visible_ocr"
+            return self.ocr_page_text(title, browser)
         self.click(browser.x + body_lines[0].cx, browser.y + body_lines[0].cy)
         time.sleep(0.15)
         if self.dismiss_miniprogram_prompt():
@@ -1276,10 +1286,81 @@ class MacHumanController:
         time.sleep(0.4)
         body = self.clipboard()
         if not meaningful_body(body):
-            raise RuntimeError("微信未复制到有效正文；已拒绝把链接或空白标为成功")
+            body = self.ocr_page_text(title, browser)
+            self.last_body_source = "visible_ocr"
+        else:
+            self.last_body_source = "clipboard"
         if _plain_title(title)[:8] not in _plain_title(body):
             raise RuntimeError("复制结果不含目标文章标题；已拒绝入库")
         return body
+
+    def verify_article_account(self, account_name: str) -> None:
+        """Require a clean byline before accepting a badge-noisy footer."""
+        browser = self.focus_browser()
+        lines = self.ocr(browser, top_fraction=0.45)
+        if not any(
+            line.text.strip() == account_name
+            or line.text.strip().startswith(account_name + " ")
+            for line in lines if 55 <= line.cy <= browser.height * 0.45
+        ):
+            raise AccountMismatchError(
+                f"文章顶部未能核对公众号 {account_name}；拒绝仅凭页尾 OCR 入库"
+            )
+
+    def ocr_page_text(self, title: str, browser: Window) -> str:
+        """Read visible pages only, stopping on a repeated verified footer."""
+        self.require_foreground(browser)
+        self.hotkey(126, self.Quartz.kCGEventFlagMaskCommand)
+        time.sleep(0.3)
+        combined: list[str] = []
+        previous: list[str] = []
+        repeated_footer = 0
+        repeated_without_footer = 0
+        for _ in range(80):
+            current = self.browser_by_number(browser.number)
+            if current is None:
+                raise RuntimeError("OCR 逐屏读取时文章窗口已消失；正文未入库")
+            self.require_foreground(current)
+            if self.dismiss_miniprogram_prompt():
+                raise MiniProgramInterceptedError("OCR 逐屏读取遇到小程序弹窗；正文未入库")
+            lines = self.ocr(current)
+            page = [line.text.strip() for line in lines
+                    if 68 <= line.cy <= current.height - 35 and line.text.strip()]
+            if not combined and not article_title_visible(title, lines):
+                raise RuntimeError("OCR 逐屏读取未确认目标文章标题；正文未入库")
+            if page == previous and any(
+                "阅读" in value or "写留言" in value or "评论" in value
+                for value in page
+            ):
+                repeated_footer += 1
+                if repeated_footer >= 2:
+                    body = "\n".join(combined)
+                    article_lines = [value for value in combined
+                                     if value != title
+                                     and len(value) >= 24
+                                     and not value.startswith(("阅读", "评论", "写留言"))]
+                    if (meaningful_body(body)
+                            and sum(len(value) for value in article_lines) >= 120
+                            and len(article_lines) >= 2
+                            and _plain_title(title)[:8] in _plain_title(body)):
+                        return body
+                    raise RuntimeError("OCR 已到页尾，但正文证据不足或标题不匹配；未入库")
+            else:
+                repeated_footer = 0
+                repeated_without_footer = repeated_without_footer + 1 if page == previous else 0
+                if repeated_without_footer >= 3:
+                    raise RuntimeError("OCR 画面连续重复但未确认文章页尾；正文未入库")
+            overlap = 0
+            for length in range(min(len(combined), len(page)), 0, -1):
+                if combined[-length:] == page[:length]:
+                    overlap = length
+                    break
+            combined.extend(page[overlap:])
+            previous = page
+            self.wheel(current.x + current.width / 2,
+                       current.y + current.height * 0.72, 600)
+            time.sleep(0.35)
+        raise RuntimeError("OCR 逐屏读取达到 80 屏仍未确认页尾；正文未入库")
 
     def copy_link(self, title: str | None = None) -> str:
         if not title:
@@ -1359,6 +1440,13 @@ class MacHumanController:
             return
         account_name = getattr(self, "tabbed_profile_account", None)
         if account_name and profile_matches_account(self.ocr(browser), account_name):
+            self.active_article_number = None
+            return
+        if account_name:
+            # Command-W can discard the profile tab along with the article.
+            # Keep the article open and return through a verified tab instead.
+            if self._tabbed_profile(account_name) is None:
+                raise RuntimeError("无法确认公众号主页标签；已保留文章窗口，未关闭")
             self.active_article_number = None
             return
         self._close_window(browser)
@@ -1461,6 +1549,8 @@ class MacHumanAccountCollector:
             article_confirmed = True
             self.action("article_window_open")
             time.sleep(0.5)
+            if hasattr(self.controller, "verify_article_account"):
+                self.controller.verify_article_account(expected_account)
             phase = "copy_link"
             if known_url:
                 if not known_url.startswith("https://mp.weixin.qq.com/"):
@@ -1506,6 +1596,7 @@ class MacHumanAccountCollector:
                 read_num=footer_read if footer_read is not None else card.read_num,
                 like_num=card.like_num,
                 share_num=parse_share_num(bottom), comment_num=comment_num,
+                body_source=getattr(self.controller, "last_body_source", "clipboard"),
             )
         except (RuntimeError, OSError, ValueError) as exc:
             exc.capture_step = phase
@@ -1513,14 +1604,14 @@ class MacHumanAccountCollector:
         finally:
             if article_confirmed and close_after:
                 self.action("before_close_article")
-                primary_error = sys.exc_info()[1]
                 try:
                     self.controller.close_article()
                     self.action("article_window_closed")
                 except RuntimeError:
                     self.action("article_cleanup_error")
-                    if primary_error is None:
-                        raise
+                    # The article payload is already verified. A failed tab
+                    # return must not discard it; the caller saves this one
+                    # before its next loop tries to restore the profile.
             elif not article_confirmed:
                 self.action("article_unconfirmed_left_open")
             if close_after:
@@ -1547,12 +1638,15 @@ class MacHumanAccountCollector:
             "url": capture.url, "title": capture.title, "body": capture.body,
             "readNum": capture.read_num, "likeNum": capture.like_num,
             "shareNum": capture.share_num, "commentNum": capture.comment_num,
-            "source": "mac_human_agent",
+            "source": "mac_human_agent_ocr" if capture.body_source == "visible_ocr"
+                      else "mac_human_agent",
         })
         body_ok = meaningful_body(capture.body)
         store.save_content(ContentSnapshot(
             article_key=key, title=capture.title, author=account.name,
-            markdown=capture.body, source="mac_human_agent",
+            markdown=capture.body,
+            source="mac_human_agent_ocr" if capture.body_source == "visible_ocr"
+                   else "mac_human_agent",
             checksum=hashlib.sha256(capture.body.encode()).hexdigest(),
             status=Status.OK if body_ok else Status.MISSING,
             reason="" if body_ok else "微信页面未复制到有效正文",
