@@ -36,3 +36,4 @@ class HttpClient:
                     time.sleep(0.4 * (2**attempt))
         raise RuntimeError(f"网络请求失败: {type(last).__name__}") from last
 
+

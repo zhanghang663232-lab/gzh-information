@@ -54,3 +54,4 @@ def test_cross_account_credential_rejected_without_request():
     result = MetricsFetcher().fetch_metrics(article, CaptureSession(biz="other", fresh_url="", cookie="x"))
     assert result.status == Status.FAILED
     assert "跨公众号" in result.reason
+

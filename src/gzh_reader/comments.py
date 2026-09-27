@@ -117,3 +117,4 @@ class CommentsFetcher:
             if completed:
                 return CommentsResult(output, Status.OK, raw_pages=raw_pages)
         return CommentsResult(output, Status.FAILED, "评论分页超过安全上限", raw_pages)
+

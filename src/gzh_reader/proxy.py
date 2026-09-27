@@ -89,3 +89,4 @@ class MacProxyManager:
         self.state_path.unlink(missing_ok=True)
         return True
 
+

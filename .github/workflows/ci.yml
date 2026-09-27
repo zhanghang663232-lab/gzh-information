@@ -23,3 +23,4 @@ jobs:
         with:
           name: gzh-information-${{ github.ref_name }}-arm64
           path: gzh-information-${{ github.ref_name }}-arm64.zip
+

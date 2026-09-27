@@ -88,3 +88,4 @@ class MetricsFetcher:
             status=Status.OK if not missing else Status.MISSING,
             reason=("缺少字段: " + ", ".join(missing)) if missing else "",
         )
+

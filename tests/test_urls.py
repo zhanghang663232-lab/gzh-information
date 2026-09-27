@@ -32,3 +32,4 @@ def test_captured_article_url_drops_credentials():
     public = CredentialCapture._public_url(value)
     assert "key=" not in public and "pass_ticket" not in public and "scene" not in public
     assert parse_biz(public) == "b"
+

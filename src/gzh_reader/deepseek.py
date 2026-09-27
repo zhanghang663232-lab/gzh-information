@@ -21,15 +21,23 @@ class DeepSeekClient:
     URL = "https://api.deepseek.com/chat/completions"
     MODEL = "deepseek-flash"
 
-    def __init__(self, api_key: str | None = None, *, timeout: int = 20):
+    def __init__(
+        self, api_key: str | None = None, *, model_id: str | None = None,
+        timeout: int = 20,
+    ):
         self._key = (api_key if api_key is not None else os.environ.get("DEEPSEEK_API_KEY", "")).strip()
         if not self._key:
             raise DeepSeekError("未配置 DEEPSEEK_API_KEY；不要把密钥发到聊天或写入仓库")
+        if not self._key.isascii() or any(ch.isspace() for ch in self._key):
+            raise DeepSeekError("DEEPSEEK_API_KEY 格式无效：必须是单行 ASCII 密钥")
+        self.model_id = (model_id or self.MODEL).strip()
+        if not re.fullmatch(r"[A-Za-z0-9._:-]{1,100}", self.model_id):
+            raise DeepSeekError("DeepSeek 模型 ID 格式无效")
         self.timeout = timeout
 
     def complete_json(self, system: str, user: str, *, max_tokens: int = 300) -> tuple[dict, dict]:
         payload = {
-            "model": self.MODEL,
+            "model": self.model_id,
             "thinking": {"type": "disabled"},
             "response_format": {"type": "json_object"},
             "max_tokens": max_tokens,
@@ -79,7 +87,7 @@ class DeepSeekClient:
         )
         if answer.get("ok") is not True:
             raise DeepSeekError("DeepSeek API 已响应，但连接测试结果不符合预期")
-        return {"model": self.MODEL, "connected": True, "usage": usage}
+        return {"model": self.model_id, "connected": True, "usage": usage}
 
 
 class DeepSeekCardReviewer:
@@ -138,3 +146,8 @@ class DeepSeekCardReviewer:
             cards.append(ProfileCard(title, read_num, like_num, metric_line.cx, metric_line.cy))
             used.add(metric_index)
         return cards
+
+
+# The reviewer checks original OCR lines regardless of which JSON-capable
+# model produced the suggested line indices. Keep the old name for callers.
+OCRCardReviewer = DeepSeekCardReviewer

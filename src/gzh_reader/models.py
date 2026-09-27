@@ -118,3 +118,4 @@ class CaptureSession:
         value["params"] = {key: "[REDACTED]" for key in self.params}
         value["fresh_url"] = "[REDACTED]"
         return value
+

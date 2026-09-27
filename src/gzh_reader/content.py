@@ -98,3 +98,4 @@ class ContentFetcher:
             cover_url=cover, assets=list(dict.fromkeys(parser.assets)), source=source,
             checksum=hashlib.sha256(raw or html.encode()).hexdigest(), status=Status.OK,
         )
+

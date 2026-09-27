@@ -5,6 +5,8 @@ import json
 import re
 from pathlib import Path
 
+from .content_quality import verified_body_file
+
 from .storage import Store
 
 SECRET_PATTERNS = {
@@ -34,26 +36,52 @@ def audit_workspace(store: Store, root: Path) -> dict:
     eligible = store.rows(
         "SELECT COUNT(*) AS n FROM articles WHERE status NOT IN ('deleted','restricted')"
     )[0]["n"]
-    content_ok = store.rows("SELECT COUNT(DISTINCT article_key) AS n FROM content_snapshots WHERE status='ok'")[0]["n"]
-    metric_counts = {}
-    for field in ("readNum", "likeNum", "oldLikeNum", "shareNum", "commentNum"):
-        metric_counts[field] = store.rows(
-            f"SELECT COUNT(DISTINCT article_key) AS n FROM metric_snapshots WHERE {field} IS NOT NULL"
-        )[0]["n"]
+    latest_content = store.rows(
+        """SELECT c.article_key,c.status,c.markdown_path FROM content_snapshots c
+           WHERE c.id=(SELECT MAX(c2.id) FROM content_snapshots c2
+                       WHERE c2.article_key=c.article_key)"""
+    )
+    valid_content = {
+        row["article_key"] for row in latest_content
+        if row["status"] == "ok" and verified_body_file(root, row["markdown_path"])
+    }
+    invalid_claims = [
+        {"article_key": row["article_key"], "layer": "content", "status": "missing",
+         "reason": "数据库标记 ok，但正文文件缺失或不含有效正文"}
+        for row in latest_content
+        if row["status"] == "ok" and row["article_key"] not in valid_content
+    ]
+    content_ok = len(valid_content)
+    # A value in an older snapshot does not prove that the latest attempt
+    # obtained it.  In particular, zero is a valid observed value.
+    latest_metrics = store.rows(
+        """SELECT m.article_key,m.readNum,m.likeNum,m.oldLikeNum,m.shareNum,m.commentNum
+           FROM metric_snapshots m
+           JOIN articles a ON a.stable_key=m.article_key
+           WHERE m.id=(SELECT MAX(m2.id) FROM metric_snapshots m2
+                       WHERE m2.article_key=m.article_key)"""
+    )
+    metric_counts = {
+        field: sum(row[field] is not None for row in latest_metrics)
+        for field in ("readNum", "likeNum", "oldLikeNum", "shareNum", "commentNum")
+    }
     list_state = store.rows(
         "SELECT provider,cursor,page_fingerprint,completed,updated_at FROM checkpoints ORDER BY updated_at DESC LIMIT 1"
     )
     report = {
-        "definition": "全量=完整枚举可发现文章，并明确记录每个不可得项；互动数据为采集时快照。",
+        "definition": "全量=完整枚举可发现文章，并明确记录每个不可得项；互动数据为采集时快照。正文 ok 仅表示通过最低长度检查，不证明文章完整。",
         "articles_discovered": total,
         "list": list_state[0] if list_state else {"completed": 0, "reason": "没有列表检查点"},
         "articles_accessible": eligible,
-        "content": {"ok": content_ok, "coverage": (content_ok / eligible if eligible else 0), "gate": 0.95},
+        "content": {"ok": content_ok, "quality_level": "minimum_body_length_only",
+                    "coverage": (content_ok / eligible if eligible else 0),
+                    "gate": 0.95, "invalid_ok_claims": len(invalid_claims)},
         "metrics": {
             field: {"ok": count, "coverage": (count / eligible if eligible else 0), "gate": 0.98}
             for field, count in metric_counts.items()
         },
-        "missing": store.rows("SELECT article_key,layer,status,reason,captured_at FROM missing_records ORDER BY layer,article_key"),
+        "missing": store.rows("SELECT article_key,layer,status,reason,captured_at FROM missing_records ORDER BY layer,article_key")
+                   + invalid_claims,
         "security_findings": security_scan(root),
     }
     audit_dir = root / "audit"

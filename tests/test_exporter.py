@@ -66,3 +66,4 @@ def test_repeated_page_is_not_called_complete(tmp_path: Path):
     with pytest.raises(RuntimeError, match="重复分页"):
         list(provider.enumerate_articles(Account(biz="b")))
     assert store.get_checkpoint("exporter", "b")["completed"] == 0
+

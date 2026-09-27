@@ -74,3 +74,4 @@ class CredentialCapture:
 
 
 addons = [CredentialCapture()]
+

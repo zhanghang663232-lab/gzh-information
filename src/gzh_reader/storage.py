@@ -141,7 +141,7 @@ class Store:
                 )
             self._missing(db, item.article_key, "content", item.status, item.reason)
 
-    def save_metrics(self, item: MetricSnapshot) -> None:
+    def save_metrics(self, item: MetricSnapshot, *, audit_fields: dict[str, int | None] | None = None) -> None:
         with self.connect() as db:
             db.execute(
                 """INSERT OR REPLACE INTO metric_snapshots
@@ -152,6 +152,13 @@ class Store:
                  item.captured_at, item.status.value, item.reason),
             )
             self._missing(db, item.article_key, "metrics", item.status, item.reason)
+            if audit_fields is not None:
+                for name, value in audit_fields.items():
+                    self._missing(
+                        db, item.article_key, f"metrics.{name}",
+                        Status.OK if value is not None else Status.MISSING,
+                        "" if value is not None else f"微信可见页面未能可靠识别 {name}",
+                    )
 
     def save_comments(self, article_key: str, comments: list[CommentRecord], status: Status, reason: str = "") -> None:
         with self.connect() as db:

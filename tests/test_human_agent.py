@@ -1,4 +1,5 @@
 import json
+import hashlib
 import subprocess
 
 import pytest
@@ -8,20 +9,33 @@ from gzh_reader.human_agent import (
     HumanCapture,
     MacHumanAccountCollector,
     MacHumanController,
+    MiniProgramInterceptedError,
+    WechatLoginRequiredError,
     OcrLine,
     ProfileCard,
     Window,
+    account_tab_line,
+    copy_link_menu_line,
+    article_menu_x,
+    article_title_visible,
     card_signature,
     completed_human_rows,
     account_name_from_profile,
     article_matches_account,
     meaningful_body,
+    is_login_required_text,
     parse_count,
     parse_profile_cards,
     parse_share_num,
     profile_identity_conflicts,
     profile_matches_account,
+    target_article_tab,
+    target_article_tabs,
+    menu_matches_article_tab,
+    titles_conflict,
+    tab_menu_x,
     unique_known_cards,
+    verified_account_name,
 )
 from gzh_reader.storage import Store
 
@@ -36,7 +50,12 @@ def test_parse_count_keeps_zero_and_converts_wan():
     assert parse_count("100001") == 100001
 
 
-def test_parse_profile_cards_uses_metric_row_as_safe_click():
+def test_link_title_conflict_allows_ocr_punctuation_but_rejects_other_article():
+    assert not titles_conflict("罚金没缴完，还能减刑吗？", "罚金没缴完还能减刑吗")
+    assert titles_conflict("服刑人员的劳动改造，家属关心的都在这里", "罚金没缴完，还能减刑吗？")
+
+
+def test_parse_profile_cards_skips_clipped_card_and_clicks_visible_title():
     lines = [
         line("监所家属", 20),
         line("300篇原创内容", 45),
@@ -46,9 +65,21 @@ def test_parse_profile_cards_uses_metric_row_as_safe_click():
         line("阅读2230 赞10", 325),
     ]
     cards = parse_profile_cards(lines, 800)
-    assert [item.title for item in cards] == ["无期徒刑，真的要坐一辈子吗？", "亲人入狱后，家属最容易忽略的三件事"]
-    assert cards[0].read_num == 731 and cards[1].like_num == 10
-    assert cards[0].click_y == 165
+    assert [item.title for item in cards] == ["亲人入狱后，家属最容易忽略的三件事"]
+    assert cards[0].read_num == 2230 and cards[0].like_num == 10
+    assert cards[0].click_y == 290
+
+
+def test_profile_metrics_do_not_join_friend_share_count_into_likes():
+    lines = [
+        line("监所家属", 30), line("301篇原创内容", 60),
+        line("罚金没缴完，还能减刑吗？", 432),
+        line("阅读3.8万 赞159 1个朋友转发", 454),
+    ]
+    cards = parse_profile_cards(lines, 809)
+    assert len(cards) == 1
+    assert cards[0].read_num == 38000
+    assert cards[0].like_num == 159
 
 
 def test_account_name_and_share_parsing():
@@ -63,6 +94,203 @@ def test_account_identity_must_match_profile_and_article_author():
     assert not profile_matches_account(profile, "安徽监狱")
     assert article_matches_account("阅读 10\n监所家属\n写留言", "监所家属")
     assert not article_matches_account("阅读 10\n安徽监狱\n写留言", "监所家属")
+
+
+def test_explicit_wechat_relogin_notice_stops_before_profile_actions():
+    assert is_login_required_text("为了你的账号安全，\n请重新登录。")
+    assert not is_login_required_text("普通页面提示：稍后再试")
+    dialog = Window(7, "", 100, 100, 560, 310, 0, 123, onscreen=True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.Quartz = type("Q", (), {"CGWindowListCopyWindowInfo": lambda *args: []})
+    controller.windows = lambda: [dialog]
+    controller.ocr = lambda window: [line("为了你的账号安全，请重新登录。", 100)]
+    assert controller.login_required()
+    with pytest.raises(WechatLoginRequiredError, match="采集已停止"):
+        controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属")
+
+
+def test_explicit_account_name_beats_search_tab_ocr():
+    lines = [line("六 监所家属-搜一搜", 10), line("监所家属", 65),
+             line("301篇原创内容", 110)]
+    assert verified_account_name(lines, "监所家属") == "监所家属"
+    with pytest.raises(RuntimeError, match="公众号主页不匹配"):
+        verified_account_name(lines, "安徽监狱")
+
+
+def test_article_title_visible_tolerates_punctuation_but_not_other_story():
+    assert article_title_visible(
+        "第一次给服刑人员写信，怎么写？",
+        [line("第一次给服刑人员写信怎么写", 100)],
+    )
+    assert not article_title_visible(
+        "第一次给服刑人员写信，怎么写？",
+        [line("服刑几年和十几年，服刑人员生活有何不同", 100)],
+    )
+
+
+def test_tab_menu_uses_observed_spacing_not_fixed_window_ratio():
+    tabs = [line("监所家属 - 搜一搜", 10, 90), line("监所家属", 10, 305),
+            line("监所家属 - 搜一搜", 10, 500), line("文章标题", 10, 710)]
+    assert tab_menu_x(tabs, 1022) == pytest.approx(871.7)
+    assert tab_menu_x([tabs[-1]], 1022) is None
+
+
+def test_copy_link_finds_dropdown_inside_article_window(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 1022, 768, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "监所家属"
+    controller.Quartz = type("Q", (), {})
+    controller.focus_browser = lambda: browser
+    controller.window = lambda title: browser if title == "微信 (窗口)" else None
+    controller.windows = lambda: [browser]
+    controller.hotkey = lambda key, flags: None
+    controller.article_menu_center = lambda window: (835, 24)
+    controller.require_foreground = lambda window: None
+    clicked = []
+    controller.click = lambda x, y: clicked.append((x, y))
+    controller.ocr = lambda window, **kwargs: (
+        [line("监所家属 - 搜一搜", 10, 487),
+         line("亲人刚进监狱那几个月，家属千万别", 10, 680),
+         line("亲人刚进监狱那几个月，家属千万别做这件事", 100, 300)]
+        if not clicked else [line("复制链接", 200, 760), line("刷新", 160, 760),
+                             line("调整文字大小", 240, 760)]
+    )
+    controller.clipboard = lambda: "https://mp.weixin.qq.com/s/test" if len(clicked) == 2 else ""
+
+    class Board:
+        def clearContents(self):
+            pass
+
+    class Pasteboard:
+        @staticmethod
+        def generalPasteboard():
+            return Board()
+
+    controller.AppKit = type("A", (), {"NSPasteboard": Pasteboard})
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    assert controller.copy_link("亲人刚进监狱那几个月，家属千万别做这件事") == "https://mp.weixin.qq.com/s/test"
+    assert len(clicked) == 2
+
+
+def test_copy_link_menu_requires_real_menu_context():
+    item = line("复制链接", 200, 760)
+    assert copy_link_menu_line([item]) is None
+    assert copy_link_menu_line([item, line("刷新", 160), line("全文翻译", 240)]) is item
+
+
+def test_copy_link_stops_before_menu_when_article_title_is_missing():
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.window = lambda title: browser
+    controller.require_foreground = lambda window: None
+    controller.dismiss_miniprogram_prompt = lambda: False
+    controller.ocr = lambda window, **kwargs: [line("其他文章标题", 100)]
+    controller.article_menu_center = lambda window: pytest.fail("标题不符时不能定位菜单")
+    controller.click = lambda x, y: pytest.fail("标题不符时不能点击")
+    with pytest.raises(RuntimeError, match="标题未确认"):
+        controller.copy_link("被称为监狱中的监狱，严管队里有多难熬？")
+
+
+def test_copy_link_rejects_menu_on_other_article_tab():
+    browser = Window(42, "微信 (窗口)", 0, 0, 1022, 768, 0, 123)
+    title = "亲人刚进监狱那几个月，家属千万别做这件事"
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.window = lambda name: browser
+    controller.require_foreground = lambda window: None
+    controller.dismiss_miniprogram_prompt = lambda: False
+    controller.ocr = lambda window, **kwargs: [
+        line(title[:18], 10, 680), line(title, 100, 300),
+    ]
+    controller.article_menu_center = lambda window: (410, 24)
+    controller.click = lambda x, y: pytest.fail("菜单不属于目标标签时不能点击")
+    with pytest.raises(RuntimeError, match="不属于目标文章标签"):
+        controller.copy_link(title)
+
+
+def test_target_tab_requires_unique_distinctive_title():
+    tabs = [line("监所家属 - 搜一搜", 10, 90), line("监所家属", 10, 305),
+            line("监所家属 - 搜一搜", 10, 500),
+            line("亲人刚进监狱那几个月，家属千万别", 10, 710)]
+    assert target_article_tab("亲人刚进监狱那几个月，家属千万别做这件事", tabs, 1022) == tabs[-1]
+    older_duplicate = line("亲人刚进监狱那几个月，家属千万别", 10, 505)
+    assert target_article_tab(
+        "亲人刚进监狱那几个月，家属千万别做这件事",
+        [older_duplicate, tabs[-1]], 1022,
+    ) is None
+    assert target_article_tab("完全不同的文章标题", tabs, 1022) is None
+    article_tab = OcrLine("亲人刚进监狱那几个月，家属千万别", 680, 10, 120, 20)
+    previous = OcrLine("监所家属 - 搜一搜", 487, 10, 100, 20)
+    assert article_menu_x(
+        "亲人刚进监狱那几个月，家属千万别做这件事", [previous, article_tab], 1022
+    ) == pytest.approx(832.47)
+    assert article_menu_x("亲人刚进监狱那几个月，家属千万别做这件事", [article_tab], 1022) is None
+
+
+def test_menu_must_be_inside_observed_article_tab():
+    title = "亲人刚进监狱那几个月，家属千万别做这件事"
+    lines = [line(title[:18], 10, 680), line("其他文章标题", 10, 950)]
+    assert menu_matches_article_tab(title, lines, 1100, 835)
+    assert not menu_matches_article_tab(title, lines, 1100, 410)
+    assert not menu_matches_article_tab(title, lines, 1100, 975)
+    assert not menu_matches_article_tab(title, [line(title, 100)], 1100, 835)
+
+
+def test_account_tab_allows_ocr_prefix_but_not_search_tab():
+    account = line("X 监所家属", 10, 326)
+    search = line("六 监所家属-搜一搜", 10, 549)
+    assert account_tab_line("监所家属", [search, account]) is account
+    assert account_tab_line("监所家属", [search]) is None
+
+
+def test_wait_article_selects_target_tab_even_if_another_article_is_active(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 1022, 768, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "监所家属"
+    controller.window = lambda title: browser
+    clicked = []
+    controller.click = lambda x, y: clicked.append((x, y))
+    title = "亲人刚进监狱那几个月，家属千万别做这件事"
+    tab = OcrLine("• 亲人刚进监狱那几个月...", 680, 10, 130, 20)
+    other = [tab, line("另一篇完全不同的文章", 100), line("正文" * 50, 210)]
+    target = [tab, line(title, 100), line("正文" * 50, 210)]
+    controller.ocr = lambda window, **kwargs: target if clicked else other
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    assert controller.wait_article(title, timeout=1) == browser
+    assert clicked == [(tab.cx, tab.cy)]
+
+
+def test_wait_article_restores_scroll_position_before_title_check(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 100, 50, 1022, 768, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "监所家属"
+    controller.window = lambda title: browser
+    title = "亲人刚进监狱那几个月，家属千万别做这件事"
+    tab = OcrLine("• 亲人刚进监狱那几个月...", 680, 10, 130, 20)
+    clicks = []
+    keys = []
+    controller.click = lambda x, y: clicks.append((x, y))
+    controller.hotkey = lambda key, flags: keys.append((key, flags))
+    controller.Quartz = type("Q", (), {"kCGEventFlagMaskCommand": 1})
+    controller.require_foreground = lambda window: None
+    controller._scrollbar_thumb = lambda window: pytest.fail("回顶部不应抓滚动条截图")
+    controller.ocr = lambda window, **kwargs: (
+        [tab, line(title, 90), line("这是正文。" * 25, 170)]
+        if keys else [tab, line("文章底部的小程序提示。" * 10, 100)]
+    )
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    assert controller.wait_article(title, timeout=1) == browser
+    assert clicks == [(browser.x + tab.cx, browser.y + tab.cy)]
+    assert keys == [(126, 1)]
+
+
+def test_wait_article_accepts_visible_title_on_short_image_article():
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "监所家属"
+    controller.window = lambda name: browser
+    controller.ocr = lambda window, **kwargs: [line("亲人入狱后最该知道的事情", 90)]
+    controller.click = lambda *args: pytest.fail("已显示的标题不应导致重复点击")
+    assert controller.wait_article("亲人入狱后最该知道的事情") == browser
 
 
 def test_scrolled_tab_still_matches_only_its_own_account():
@@ -89,8 +317,8 @@ def test_scrolled_tab_still_matches_only_its_own_account():
 def test_navigation_ocr_is_not_prepended_to_card_title():
     cards = parse_profile_cards([
         line("• 监所家属", 60), line("全部 文草", 90),
-        line("亲人入狱后，家属最容易忽略的三件事", 130),
-        line("阅读2579 赞10", 155),
+        line("亲人入狱后，家属最容易忽略的三件事", 180),
+        line("阅读2579 赞10", 205),
     ], 800)
     assert [card.title for card in cards] == ["亲人入狱后，家属最容易忽略的三件事"]
 
@@ -272,10 +500,40 @@ def test_tabbed_profile_is_not_closed_as_article_window():
     controller.window = lambda title: browser if title == "微信 (窗口)" else None
     controller.activate = lambda: None
     controller._raise = lambda window: True
-    controller.ocr = lambda window: [line("监所家属", 90), line("301篇原创内容", 190)]
+    controller.ocr = lambda window, **kwargs: [line("监所家属", 90), line("301篇原创内容", 190)]
     controller._close_window = lambda window: pytest.fail("不应关闭公众号标签页")
     assert controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属") == browser
     assert controller.tabbed_profile_account == "监所家属"
+
+
+def test_open_profile_stops_on_blank_wechat_window_without_clicking():
+    main = Window(1, "微信", 0, 0, 880, 640, 0, 42, True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.require_active_session = lambda: None
+    controller._tabbed_profile = lambda account: None
+    controller.window = lambda title: main if title == "微信" else None
+    controller.activate = lambda: None
+    controller.wait_window = lambda title: main
+    controller._raise = lambda window: True
+    controller.ocr = lambda window: []
+    controller.click = lambda x, y: pytest.fail("空白窗口不能被点击")
+    with pytest.raises(RuntimeError, match="主窗口当前为空白"):
+        controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属")
+
+
+def test_open_profile_stops_before_ocr_when_main_window_is_unshared():
+    main = Window(1, "微信", 0, 0, 880, 640, 0, 42, True, 0)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.require_active_session = lambda: None
+    controller._tabbed_profile = lambda account: None
+    controller.window = lambda title: main if title == "微信" else None
+    controller.activate = lambda: None
+    controller.wait_window = lambda title: main
+    controller._raise = lambda window: True
+    controller.ocr = lambda window: pytest.fail("不可共享窗口不应反复截图")
+    controller.click = lambda x, y: pytest.fail("不可共享窗口不能盲点")
+    with pytest.raises(RuntimeError, match="未向系统共享画面"):
+        controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属")
 
 
 def test_tabbed_article_must_replace_profile_before_capture(monkeypatch):
@@ -283,11 +541,107 @@ def test_tabbed_article_must_replace_profile_before_capture(monkeypatch):
     controller = MacHumanController.__new__(MacHumanController)
     controller.tabbed_profile_account = "监所家属"
     controller.window = lambda title: browser if title == "微信 (窗口)" else None
-    controller.ocr = lambda window: [line("监所家属", 90), line("301篇原创内容", 190)]
+    controller.ocr = lambda window, **kwargs: [line("监所家属", 90), line("301篇原创内容", 190)]
     monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
-    monkeypatch.setattr("gzh_reader.human_agent.time.monotonic", iter([0, 9]).__next__)
-    with pytest.raises(RuntimeError, match="未能确认文章标签"):
+    monkeypatch.setattr("gzh_reader.human_agent.time.monotonic", iter([0, 0, 9]).__next__)
+    with pytest.raises(RuntimeError, match="未确认目标文章已打开.*profile_still_active"):
         controller.wait_article("第一篇文章")
+
+
+def test_wait_article_switches_only_to_observed_target_tab(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 1022, 768, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "监所家属"
+    controller.window = lambda title: browser
+    clicked = []
+    controller.click = lambda x, y: clicked.append((x, y))
+
+    def current_lines(window, **kwargs):
+        if clicked:
+            return [line("亲人刚进监狱那几个月，家属千万别做这件事", 70),
+                    line("这是文章正文。" * 20, 180)]
+        return [line("监所家属 - 搜一搜", 10, 90),
+                line("监所家属", 10, 305),
+                line("监所家属 - 搜一搜", 10, 500),
+                line("亲人刚进监狱那几个月，家属千万别", 10, 710),
+                line("监所家属", 70), line("301篇原创内容", 100)]
+
+    controller.ocr = current_lines
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("gzh_reader.human_agent.time.monotonic", lambda: 0)
+    assert controller.wait_article("亲人刚进监狱那几个月，家属千万别做这件事") == browser
+    assert clicked == [(800, 20)]
+
+
+def test_wait_article_recovers_duplicate_title_tabs_by_clicking_label(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 1100, 768, 0, 123)
+    title = "亲人刚进监狱那几个月，家属千万别做这件事"
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "监所家属"
+    controller.window = lambda name: browser
+    clicked = []
+    controller.click = lambda x, y: clicked.append((x, y))
+
+    def current_lines(window, **kwargs):
+        if clicked:
+            return [line(title, 70), line("这是文章正文。" * 20, 180)]
+        return [
+            line("监所家属", 10, 150),
+            line(title[:15], 10, 420),
+            line(title[:15], 10, 740),
+            line("监所家属", 70),
+            line("302篇原创内容", 100),
+        ]
+
+    controller.ocr = current_lines
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    monkeypatch.setattr("gzh_reader.human_agent.time.monotonic", lambda: 0)
+    observed = current_lines(browser)
+    assert len(target_article_tabs(title, observed, browser.width)) == 2
+    assert target_article_tab(title, observed, browser.width) is None
+    assert controller.wait_article(title) == browser
+    assert clicked == [(830, 20)]
+
+
+def test_wait_article_retries_one_ocr_timeout_without_clicking(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 1100, 768, 0, 123)
+    title = "亲人刚进监狱那几个月，家属千万别做这件事"
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "监所家属"
+    controller.window = lambda name: browser
+    controller.click = lambda x, y: pytest.fail("OCR 超时重试不能点击界面")
+    calls = []
+
+    def ocr(window, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            raise RuntimeError("微信窗口 OCR 超时（阶段 recognize_start）")
+        return [line(title, 70), line("这是文章正文。" * 20, 180)]
+
+    controller.ocr = ocr
+    monkeypatch.setattr("gzh_reader.human_agent.time.monotonic", lambda: 0)
+    assert controller.wait_article(title) == browser
+    assert len(calls) == 2
+    assert calls[0]["top_fraction"] == 0.3
+    assert calls[1]["visible"] is True
+    assert calls[1]["region"] == (0, 0, browser.width, 260)
+
+
+def test_confirm_current_article_scrolls_to_top_without_switching_tabs():
+    browser = Window(42, "微信 (窗口)", 0, 0, 1100, 768, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.window = lambda name: browser
+    controller.require_foreground = lambda window: None
+    controller.Quartz = type("Q", (), {"kCGEventFlagMaskCommand": 1})
+    keys = []
+    controller.hotkey = lambda key, flags: keys.append((key, flags))
+    controller.click = lambda x, y: pytest.fail("恢复当前文章不能切换标签")
+    controller.ocr = lambda window, **kwargs: [
+        line("被称为监狱中的监狱，严管队里有多难熬？", 70),
+        line("文章正文" * 30, 170),
+    ]
+    assert controller.confirm_current_article("被称为监狱中的监狱，严管队里有多难熬？") == browser
+    assert keys == [(126, 1)]
 
 
 def test_tabbed_profile_fallback_never_accepts_author_only(monkeypatch):
@@ -301,7 +655,37 @@ def test_tabbed_profile_fallback_never_accepts_author_only(monkeypatch):
     monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
     monkeypatch.setattr("gzh_reader.human_agent.time.monotonic", iter([0, 9]).__next__)
     assert controller._tabbed_profile("监所家属") is None
-    assert clicks == [(900 * 0.42, 800 * 0.03)]
+    assert clicks == []
+
+
+def test_open_profile_closes_only_verified_target_article_tab():
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.window = lambda title: browser if title == "微信 (窗口)" else None
+    closed = []
+    controller._tabbed_profile = lambda account: browser if closed else None
+    controller.ocr = lambda window: [line("阅读 562", 480), line("监所家属", 500)]
+    controller._close_window = lambda window: closed.append(window)
+    assert controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属") == browser
+    assert closed == [browser]
+    assert controller.tabbed_profile_account == "监所家属"
+
+
+def test_open_profile_uses_verified_article_footer_link_before_closing(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 10, 20, 900, 800, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.window = lambda title: browser if title == "微信 (窗口)" else None
+    clicked = []
+    controller._tabbed_profile = lambda account: browser if clicked else None
+    controller.ocr = lambda window: [line("阅读 562", 680), line("监所家属", 720)]
+    controller._raise = lambda window: True
+    controller.click = lambda x, y: clicked.append((x, y))
+    controller._close_window = lambda window: pytest.fail("不应关闭可读文章窗口")
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    assert controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属") == browser
+    # 新版微信页尾账号名文字本身不可点，点击的是名称左侧的圆形头像
+    assert clicked == [(2, 750)]
+    assert controller.tabbed_profile_account == "监所家属"
 
 
 def test_tabbed_close_refuses_when_profile_is_current():
@@ -311,8 +695,7 @@ def test_tabbed_close_refuses_when_profile_is_current():
     controller.window = lambda title: browser if title == "微信 (窗口)" else None
     controller.ocr = lambda window: [line("监所家属", 90), line("301篇原创内容", 190)]
     controller._close_window = lambda window: pytest.fail("不应关闭公众号标签页")
-    with pytest.raises(RuntimeError, match="拒绝再次关闭"):
-        controller.close_article()
+    controller.close_article()
 
 
 def test_miniprogram_prompt_uses_cancel_only(monkeypatch):
@@ -339,19 +722,81 @@ def test_miniprogram_prompt_uses_cancel_only(monkeypatch):
     assert clicks == [(490, 420)]
 
 
-def test_copy_body_focuses_blank_margin_not_embedded_card(monkeypatch):
+def test_wait_article_cancels_centered_miniprogram_prompt_and_stops(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "监所家属"
+    controller.window = lambda title: browser
+    controller.ocr = lambda window, **kwargs: (
+        [line("旧文章", 80)] if "top_fraction" in kwargs
+        else [line("即将打开小程序", 400)]
+    )
+    controller.dismiss_miniprogram_prompt = lambda: True
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    with pytest.raises(MiniProgramInterceptedError, match="已取消并停止"):
+        controller.wait_article("目标文章", timeout=1)
+
+
+def test_copy_link_stops_before_clicking_when_miniprogram_prompt_was_open():
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.window = lambda title: browser
+    controller.require_foreground = lambda window: None
+    controller.dismiss_miniprogram_prompt = lambda: True
+    controller.hotkey = lambda key, flags: pytest.fail("不得继续操作弹窗后的页面")
+    with pytest.raises(MiniProgramInterceptedError, match="拒绝继续复制链接"):
+        controller.copy_link("目标文章")
+
+
+def test_copy_body_focuses_verified_paragraph_and_rejects_stale_link(monkeypatch):
     browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123)
     controller = MacHumanController.__new__(MacHumanController)
     controller.focus_browser = lambda: browser
     controller.dismiss_miniprogram_prompt = lambda: False
+    title = "监狱里的生活是什么样子"
+    controller.ocr = lambda window, **kwargs: [
+        line(title, 100, 300),
+        line("原创 作者 监所家属 2026年9月17日", 135, 300),
+        line("这是文章正文的第一段，可以确认点击目标在文章内部。", 200, 300),
+    ]
     clicks = []
     controller.click = lambda x, y: clicks.append((x, y))
     controller.hotkey = lambda key, flags: None
-    controller.clipboard = lambda: "正文" * 100
+    controller.clipboard = lambda: title + "\n" + "正文" * 100
+    controller.Quartz = type("Q", (), {"kCGEventFlagMaskCommand": 1})
+    class Board:
+        def clearContents(self):
+            pass
+    controller.AppKit = type("A", (), {"NSPasteboard": type("P", (), {"generalPasteboard": lambda: Board()})})
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    assert controller.copy_page_text(title) == title + "\n" + "正文" * 100
+    assert clicks == [(390, 210)]
+    controller.clipboard = lambda: "https://mp.weixin.qq.com/s/old"
+    with pytest.raises(RuntimeError, match="有效正文"):
+        controller.copy_page_text(title)
+
+
+def test_copy_body_refuses_to_click_when_paragraph_not_visible():
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.focus_browser = lambda: browser
+    controller.dismiss_miniprogram_prompt = lambda: False
+    controller.ocr = lambda window, **kwargs: [line("监狱里的生活是什么样子", 100, 300)]
+    controller.click = lambda x, y: pytest.fail("没有正文时不应点击")
+    with pytest.raises(RuntimeError, match="没有可确认的正文段落"):
+        controller.copy_page_text("监狱里的生活是什么样子")
+
+
+def test_page_bottom_accepts_short_footer_after_window_identity_check(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.focus_browser = lambda: browser
+    controller.window = lambda title: browser
+    controller.hotkey = lambda key, flags: None
+    controller.ocr = lambda window: [line("监所家属", 700), line("阅读 5910", 680)]
     controller.Quartz = type("Q", (), {"kCGEventFlagMaskCommand": 1})
     monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
-    assert controller.copy_page_text() == "正文" * 100
-    assert clicks == [(24, 180)]
+    assert controller.page_bottom() == "监所家属\n阅读 5910"
 
 
 def test_capture_records_action_sequence_without_article_text(monkeypatch):
@@ -364,11 +809,11 @@ def test_capture_records_action_sequence_without_article_text(monkeypatch):
         def wait_window(self, title, timeout):
             return profile
 
-        def copy_link(self):
+        def copy_link(self, title):
             return "https://mp.weixin.qq.com/s/test"
 
-        def copy_page_text(self):
-            return "文章正文" * 30
+        def copy_page_text(self, title):
+            return title + "\n" + "文章正文" * 30
 
         def page_bottom(self):
             return "阅读 20\n监所家属"
@@ -391,7 +836,115 @@ def test_capture_records_action_sequence_without_article_text(monkeypatch):
     ]
 
 
-def test_article_title_mismatch_closes_tab_before_next_card(monkeypatch):
+def test_capture_already_open_never_clicks_or_closes_tab(monkeypatch):
+    browser = Window(1, "微信 (窗口)", 0, 0, 900, 800, 0, 42)
+
+    class FakeController:
+        def click(self, x, y):
+            pytest.fail("恢复当前文章不能点击列表卡片")
+        def wait_article(self, title, timeout):
+            return browser
+        def copy_link(self, title):
+            return "https://mp.weixin.qq.com/s/test"
+        def copy_page_text(self, title):
+            return title + "\n" + "文章正文" * 40
+        def page_bottom(self):
+            return "阅读 20\n监所家属"
+        def close_article(self):
+            pytest.fail("恢复当前文章不能关闭用户标签")
+        def focus_profile(self):
+            pytest.fail("恢复当前文章不能切回主页")
+
+    collector = MacHumanAccountCollector(controller=FakeController())
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    capture = collector._capture_card(
+        browser, ProfileCard("测试文章标题", None, None, 0, 0), "监所家属",
+        already_open=True, close_after=False,
+    )
+    assert capture.url == "https://mp.weixin.qq.com/s/test"
+    assert capture.read_num == 20
+
+
+def test_recover_open_article_saves_verified_capture(tmp_path: Path):
+    browser = Window(1, "微信 (窗口)", 0, 0, 900, 800, 0, 42)
+
+    class Controller:
+        def window(self, title):
+            return browser
+
+    collector = MacHumanAccountCollector(controller=Controller())
+    calls = []
+
+    def capture(window, card, account_name, **kwargs):
+        calls.append(kwargs)
+        return HumanCapture(
+            "https://mp.weixin.qq.com/s/recovered", card.title,
+            card.title + "\n" + "文章正文" * 40,
+            20, None, None, None,
+        )
+
+    collector._capture_card = capture
+    audit_dir = tmp_path / "监所家属" / "audit"
+    audit_dir.mkdir(parents=True)
+    fingerprint = hashlib.sha256("测试文章标题".encode()).hexdigest()
+    (audit_dir / "human-agent-last-error.json").write_text(json.dumps({
+        "account": "监所家属", "title": "测试文章标题",
+        "viewport_fingerprint": fingerprint, "card_index": 0,
+        "card_count": 1,
+    }), encoding="utf-8")
+    root, saved = collector.recover_open_article(
+        title="测试文章标题", account_name="监所家属",
+        seed_url="https://mp.weixin.qq.com/s/seed", output=tmp_path,
+    )
+    assert saved
+    assert calls == [{"already_open": True, "close_after": False}]
+    assert Store(root / "database" / "archive.sqlite3").rows(
+        "SELECT COUNT(*) AS n FROM articles"
+    )[0]["n"] == 1
+    assert (root / "audit" / "coverage.json").exists()
+    hints = json.loads((root / "audit" / "human-agent-card-hints.json").read_text())
+    assert hints["cards"][fingerprint + "|0"] == "https://mp.weixin.qq.com/s/recovered"
+
+
+def test_link_receipt_survives_body_failure_and_resume_skips_menu(monkeypatch):
+    profile = Window(1, "公众号", 0, 0, 400, 600, 0, 42)
+    calls = []
+
+    class FakeController:
+        def click(self, x, y):
+            pass
+        def wait_window(self, title, timeout):
+            return profile
+        def copy_link(self, title):
+            calls.append("copy_link")
+            return "https://mp.weixin.qq.com/s/test"
+        def copy_page_text(self, title):
+            calls.append("copy_body")
+            if calls.count("copy_body") == 1:
+                raise RuntimeError("正文暂时不可复制")
+            return title + "\n" + "文章正文" * 30
+        def page_bottom(self):
+            return "阅读 20\n监所家属"
+        def close_article(self):
+            pass
+        def focus_profile(self):
+            return profile
+
+    collector = MacHumanAccountCollector(controller=FakeController())
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    saved = []
+    card = ProfileCard("标题", 20, 1, 100, 200)
+    with pytest.raises(RuntimeError, match="正文暂时不可复制"):
+        collector._capture_card(profile, card, "监所家属", on_link=saved.append)
+    assert saved == ["https://mp.weixin.qq.com/s/test"]
+    result = collector._capture_card(
+        profile, card, "监所家属", known_url=saved[0],
+    )
+    assert result.url == saved[0]
+    assert calls.count("copy_link") == 1
+
+
+def test_article_title_mismatch_leaves_unconfirmed_tab_open(monkeypatch):
     profile = Window(1, "微信 (窗口)", 0, 0, 900, 800, 0, 42)
     actions = []
 
@@ -416,7 +969,30 @@ def test_article_title_mismatch_closes_tab_before_next_card(monkeypatch):
         collector._capture_card(
             profile, ProfileCard("卡片标题", 20, 1, 100, 200), "监所家属"
         )
-    assert actions == ["click", "title_mismatch", "close_article", "focus_profile"]
+    assert actions == ["click", "title_mismatch", "focus_profile"]
+
+
+def test_cleanup_error_does_not_hide_article_open_failure(monkeypatch):
+    profile = Window(1, "微信 (窗口)", 0, 0, 900, 800, 0, 42)
+
+    class FakeController:
+        def click(self, x, y):
+            pass
+
+        def wait_article(self, title, timeout):
+            from gzh_reader.human_agent import ArticleNotOpenedError
+            raise ArticleNotOpenedError("文章未打开")
+
+        def close_article(self):
+            raise RuntimeError("清理失败")
+
+        def focus_profile(self):
+            return profile
+
+    collector = MacHumanAccountCollector(controller=FakeController())
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    with pytest.raises(RuntimeError, match="文章未打开"):
+        collector._capture_card(profile, ProfileCard("卡片", 20, 1, 100, 200), "监所家属")
 
 
 def test_known_card_signature_requires_unique_url():
@@ -448,23 +1024,39 @@ def test_resume_includes_both_human_account_id_versions(tmp_path):
                 (biz, biz, f"https://mp.weixin.qq.com/s/{biz}", biz),
             )
             db.execute(
-                "INSERT INTO content_snapshots(article_key,checksum,status) VALUES(?,?,'ok')",
-                (biz, biz),
+                "INSERT INTO content_snapshots(article_key,checksum,markdown_path,status) VALUES(?,?,?,'ok')",
+                (biz, biz, f"raw/{biz}.md"),
             )
             db.execute(
                 "INSERT INTO metric_snapshots(article_key,readNum,likeNum,status) VALUES(?,10,0,'ok')",
                 (biz,),
             )
-    rows = completed_human_rows(store, "监所家属")
+            (tmp_path / "raw").mkdir(exist_ok=True)
+            (tmp_path / "raw" / f"{biz}.md").write_text("这是有效正文。" * 30, encoding="utf-8")
+    rows = completed_human_rows(store, "监所家属", tmp_path)
     assert {row["title"] for row in rows} == {"human-old", "human:new"}
+
+
+def test_resume_does_not_skip_url_only_body_marked_ok(tmp_path):
+    store = Store(tmp_path / "archive.sqlite3")
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw" / "link.md").write_text(
+        "https://mp.weixin.qq.com/s/one", encoding="utf-8"
+    )
+    with store.connect() as db:
+        db.execute("INSERT INTO accounts(biz,name,source,status) VALUES('human:one','监所家属','mac_human_agent','ok')")
+        db.execute("INSERT INTO articles(stable_key,biz,url,title,status) VALUES('one','human:one','https://mp.weixin.qq.com/s/one','文章','ok')")
+        db.execute("INSERT INTO content_snapshots(article_key,markdown_path,status) VALUES('one','raw/link.md','ok')")
+        db.execute("INSERT INTO metric_snapshots(article_key,readNum,status) VALUES('one',1,'ok')")
+    assert completed_human_rows(store, "监所家属", tmp_path) == []
 
 
 def test_small_batches_resume_without_reopening_known_cards(tmp_path: Path):
     profile = Window(1, "公众号", 0, 0, 400, 600, 0, 42)
     lines = [
         line("监所家属", 30), line("301篇原创内容", 60),
-        line("第一篇文章", 110), line("阅读101 赞1", 155),
-        line("第二篇文章", 250), line("阅读202 赞2", 295),
+        line("第一篇文章", 180), line("阅读101 赞1", 205),
+        line("第二篇文章", 350), line("阅读202 赞2", 395),
     ]
 
     class FakeController:
@@ -489,7 +1081,7 @@ def test_small_batches_resume_without_reopening_known_cards(tmp_path: Path):
     opened = []
     collector = MacHumanAccountCollector(controller=FakeController())
 
-    def capture(window, card, account_name):
+    def capture(window, card, account_name, **kwargs):
         opened.append(card.title)
         return HumanCapture(
             url="https://mp.weixin.qq.com/s/" + ("first" if card.title == "第一篇文章" else "second"),
@@ -502,6 +1094,261 @@ def test_small_batches_resume_without_reopening_known_cards(tmp_path: Path):
     url = "https://mp.weixin.qq.com/s/example"
     workspace = collector.collect(url, tmp_path, account_name="监所家属", max_new_articles=1)
     assert opened == ["第一篇文章"]
+    first_store = Store(workspace / "database" / "archive.sqlite3")
+    assert first_store.rows("SELECT status FROM metric_snapshots ORDER BY id DESC LIMIT 1")[0]["status"] == "missing"
+    layers = {row["layer"] for row in first_store.rows("SELECT layer FROM missing_records")}
+    assert {"metrics.shareNum", "metrics.commentNum"} <= layers
+    assert "metrics.readNum" not in layers
     collector.collect(url, tmp_path, account_name="监所家属", max_new_articles=1)
     assert opened == ["第一篇文章", "第二篇文章"]
     assert len(Store(workspace / "database" / "archive.sqlite3").rows("SELECT url FROM articles")) == 2
+
+
+def test_reobserves_card_coordinates_after_each_article(tmp_path: Path, monkeypatch):
+    profile = Window(1, "公众号", 0, 0, 400, 600, 0, 42)
+    initial = [
+        line("监所家属", 30), line("301篇原创内容", 60),
+        line("第一篇文章", 180), line("阅读101 赞1", 205),
+        line("第二篇文章", 350), line("阅读202 赞2", 395),
+    ]
+    shifted = [
+        line("监所家属", 30), line("301篇原创内容", 60),
+        line("第二篇文章", 180), line("阅读202 赞2", 205),
+    ]
+
+    class Controller:
+        shifted = False
+
+        def open_profile(self, url, account_name):
+            return profile
+        def scroll_to_top(self):
+            return profile
+        def focus_profile(self):
+            return profile
+        def ocr(self, window):
+            return shifted if self.shifted else initial
+        def scroll(self):
+            return False
+
+    controller = Controller()
+    collector = MacHumanAccountCollector(controller=controller)
+    opened = []
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda _: None)
+
+    def capture(window, card, account_name, **kwargs):
+        opened.append((card.title, card.click_y))
+        controller.shifted = True
+        return HumanCapture(
+            url="https://mp.weixin.qq.com/s/" + str(len(opened)),
+            title=card.title, body="这是公开文章正文。" * 30,
+            read_num=card.read_num, like_num=card.like_num,
+            share_num=None, comment_num=None,
+        )
+
+    collector._capture_card = capture
+    collector.collect(
+        "https://mp.weixin.qq.com/s/example", tmp_path,
+        account_name="监所家属", max_new_articles=2,
+    )
+    assert opened == [("第一篇文章", 190), ("第二篇文章", 190)]
+
+
+def test_empty_list_rechecks_profile_before_scrolling(tmp_path: Path):
+    profile = Window(1, "公众号", 0, 0, 400, 600, 0, 42)
+    header = [line("监所家属", 30), line("301篇原创内容", 60)]
+
+    class Controller:
+        calls = 0
+        scrolled = False
+
+        def open_profile(self, url, account_name):
+            return profile
+        def scroll_to_top(self):
+            return profile
+        def focus_profile(self):
+            return profile
+        def ocr(self, window):
+            self.calls += 1
+            return [] if self.calls >= 3 else header
+        def scroll(self):
+            self.scrolled = True
+            return True
+
+    controller = Controller()
+    collector = MacHumanAccountCollector(controller=controller)
+    workspace = collector.collect(
+        "https://mp.weixin.qq.com/s/example", tmp_path,
+        account_name="监所家属", max_new_articles=1,
+    )
+    progress = json.loads((workspace / "audit" / "human-agent-progress.json").read_text(encoding="utf-8"))
+    assert progress["stop_reason"] == "profile_lost_before_scroll"
+    assert progress["attempts"] == 0
+    assert controller.scrolled is False
+
+
+def test_saved_url_with_different_title_stops_batch(tmp_path: Path):
+    profile = Window(1, "公众号", 0, 0, 400, 600, 0, 42)
+
+    class Controller:
+        title = "第一篇文章标题"
+
+        def open_profile(self, url, account_name):
+            return profile
+        def scroll_to_top(self):
+            return profile
+        def focus_profile(self):
+            return profile
+        def ocr(self, window):
+            return [line("监所家属", 30), line("301篇原创内容", 60),
+                    line(self.title, 180), line("阅读101 赞1", 205)]
+        def scroll(self):
+            return False
+
+    controller = Controller()
+    collector = MacHumanAccountCollector(controller=controller)
+
+    def capture(window, card, account_name, **kwargs):
+        return HumanCapture(
+            url="https://mp.weixin.qq.com/s/same-url", title=card.title,
+            body=card.title + "\n" + "这是公开文章正文。" * 30,
+            read_num=101, like_num=1, share_num=None, comment_num=None,
+        )
+
+    collector._capture_card = capture
+    seed = "https://mp.weixin.qq.com/s/example"
+    workspace = collector.collect(seed, tmp_path, account_name="监所家属", max_new_articles=1)
+    controller.title = "完全不同的第二篇文章"
+    collector.collect(seed, tmp_path, account_name="监所家属", max_new_articles=1)
+    progress = json.loads((workspace / "audit" / "human-agent-progress.json").read_text(encoding="utf-8"))
+    assert progress["stop_reason"] == "link_title_conflict"
+    assert progress["new_in_run"] == 0
+    assert len(Store(workspace / "database" / "archive.sqlite3").rows("SELECT url FROM articles")) == 1
+
+
+def test_stale_viewport_link_hint_is_not_reused_for_new_card(tmp_path: Path):
+    profile = Window(1, "公众号", 0, 0, 400, 600, 0, 42)
+
+    class Controller:
+        title = "第一篇文章标题"
+        def open_profile(self, url, account_name):
+            return profile
+        def scroll_to_top(self):
+            return profile
+        def focus_profile(self):
+            return profile
+        def ocr(self, window):
+            return [line("监所家属", 30), line("301篇原创内容", 60),
+                    line(self.title, 180), line("阅读101 赞1", 205)]
+        def scroll(self):
+            return False
+
+    controller = Controller()
+    collector = MacHumanAccountCollector(controller=controller)
+    seen_known_urls = []
+
+    def capture(window, card, account_name, *, known_url=None, **kwargs):
+        seen_known_urls.append(known_url)
+        return HumanCapture(
+            url="https://mp.weixin.qq.com/s/" + str(len(seen_known_urls)),
+            title=card.title, body=card.title + "\n" + "这是公开文章正文。" * 30,
+            read_num=101, like_num=1, share_num=None, comment_num=None,
+        )
+
+    collector._capture_card = capture
+    seed = "https://mp.weixin.qq.com/s/example"
+    workspace = collector.collect(seed, tmp_path, account_name="监所家属", max_new_articles=1)
+    controller.title = "完全不同的第二篇文章"
+    fingerprint = hashlib.sha256(controller.title.encode()).hexdigest()
+    hints_path = workspace / "audit" / "human-agent-card-hints.json"
+    hints = json.loads(hints_path.read_text(encoding="utf-8"))
+    hints["cards"][fingerprint + "|0"] = "https://mp.weixin.qq.com/s/1"
+    hints_path.write_text(json.dumps(hints, ensure_ascii=False), encoding="utf-8")
+    collector.collect(seed, tmp_path, account_name="监所家属", max_new_articles=1)
+    assert seen_known_urls == [None, None]
+    assert len(Store(workspace / "database" / "archive.sqlite3").rows("SELECT url FROM articles")) == 2
+
+
+def test_agent_order_uses_original_card_ids_for_capture(tmp_path: Path):
+    profile = Window(1, "公众号", 0, 0, 400, 600, 0, 42)
+    lines = [line("监所家属", 30), line("301篇原创内容", 60),
+             line("第一篇文章", 180), line("阅读101 赞1", 205),
+             line("第二篇文章", 350), line("阅读202 赞2", 395)]
+
+    class Controller:
+        def open_profile(self, url, account_name):
+            return profile
+        def scroll_to_top(self):
+            return profile
+        def focus_profile(self):
+            return profile
+        def ocr(self, window):
+            return lines
+        def scroll(self):
+            return False
+
+    class Agent:
+        calls = 1
+        def plan_cards(self, cards):
+            return [1, 0]
+
+    collector = MacHumanAccountCollector(controller=Controller(), agent=Agent())
+    opened = []
+
+    def capture(window, card, account_name, **kwargs):
+        opened.append(card.title)
+        return HumanCapture(
+            url="https://mp.weixin.qq.com/s/second", title=card.title,
+            body="这是公开文章正文。" * 30,
+            read_num=card.read_num, like_num=card.like_num,
+            share_num=None, comment_num=None,
+        )
+
+    collector._capture_card = capture
+    collector.collect(
+        "https://mp.weixin.qq.com/s/example", tmp_path,
+        account_name="监所家属", max_new_articles=1,
+    )
+    assert opened == ["第二篇文章"]
+
+
+def test_any_article_step_failure_stops_before_next_card(tmp_path: Path):
+    profile = Window(1, "公众号", 0, 0, 400, 600, 0, 42)
+    lines = [line("监所家属", 30), line("301篇原创内容", 60),
+             line("第一篇文章", 180), line("阅读101 赞1", 205),
+             line("第二篇文章", 350), line("阅读202 赞2", 395)]
+
+    extra_closes = []
+
+    class FakeController:
+        def open_profile(self, url, account_name):
+            return profile
+        def scroll_to_top(self):
+            return profile
+        def focus_profile(self):
+            return profile
+        def ocr(self, window):
+            return lines
+        def close_article(self):
+            extra_closes.append(True)
+        def scroll(self):
+            return False
+
+    collector = MacHumanAccountCollector(controller=FakeController())
+    opened = []
+
+    def fail_capture(window, card, account_name, **kwargs):
+        opened.append(card.title)
+        error = RuntimeError("页尾不可读")
+        error.capture_step = "page_bottom"
+        raise error
+
+    collector._capture_card = fail_capture
+    workspace = collector.collect(
+        "https://mp.weixin.qq.com/s/example", tmp_path,
+        account_name="监所家属", max_new_articles=5,
+    )
+    progress = json.loads((workspace / "audit" / "human-agent-progress.json").read_text(encoding="utf-8"))
+    assert opened == ["第一篇文章"]
+    assert progress["stop_reason"] == "page_bottom_failed"
+    assert progress["attempts"] == 1
+    assert extra_closes == []

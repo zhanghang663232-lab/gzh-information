@@ -4,6 +4,7 @@ import csv
 import json
 from pathlib import Path
 
+from .content_quality import verified_body_file
 from .storage import Store
 from .workspace import safe_name
 
@@ -41,7 +42,7 @@ def export_all(store: Store, root: Path) -> dict[str, int]:
         _write_csv(exports / f"{name}.csv", rows)
     accounts = store.rows("SELECT * FROM accounts LIMIT 1")
     account_name = accounts[0]["name"] if accounts else root.name
-    index = [f"# {account_name}", "", f"共发现 {len(articles)} 篇文章。", "", "## 文章索引", ""]
+    index = [f"# {account_name}", "", f"共发现 {len(articles)} 篇文章；正文覆盖率以 audit/coverage.json 的文件校验结果为准。", "", "## 文章索引", ""]
     for article in articles:
         suffix = article["stable_key"].replace(":", "-")[-10:]
         filename = safe_name(article.get("title") or "无标题") + f"-{suffix}.md"
@@ -50,14 +51,20 @@ def export_all(store: Store, root: Path) -> dict[str, int]:
             (article["stable_key"],),
         )
         body = ""
-        if content and content[0].get("markdown_path"):
+        body_ok = bool(
+            content and content[0]["status"] == "ok"
+            and verified_body_file(root, content[0].get("markdown_path"))
+        )
+        if body_ok:
             path = root / content[0]["markdown_path"]
-            if path.exists():
-                body = path.read_text(encoding="utf-8")
+            body = path.read_text(encoding="utf-8")
+        content_status = "ok" if body_ok else "missing"
         note = (
             f"---\nsource: {article['url']}\nstatus: {article['status']}\n"
+            f"content_status: {content_status}\n"
             f"published_at: {article.get('published_at','')}\n---\n\n"
-            f"# {article.get('title') or '无标题'}\n\n{body}\n"
+            f"# {article.get('title') or '无标题'}\n\n"
+            f"{body if body_ok else '> 正文尚未可靠采集；请勿把来源链接当作正文。'}\n"
         )
         (obsidian / filename).write_text(note, encoding="utf-8")
         index.append(f"- [[{filename[:-3]}]]")

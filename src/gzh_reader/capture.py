@@ -70,3 +70,4 @@ def capture_session(workspace: Workspace, biz: str, *, consent: bool, port: int 
         workspace.scrub_credential()
         lease.unlink(missing_ok=True)
         guardian.terminate()
+

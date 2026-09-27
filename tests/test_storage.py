@@ -30,3 +30,4 @@ def test_missing_ledger_clears_on_success(tmp_path: Path):
                                       shareNum=0, commentNum=0, status=Status.OK))
     assert store.rows("SELECT COUNT(*) n FROM missing_records")[0]["n"] == 0
 
+

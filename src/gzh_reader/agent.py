@@ -167,3 +167,4 @@ class NativeMacObserver:
         up = Quartz.CGEventCreateKeyboardEvent(None, 53, False)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, down)
         Quartz.CGEventPost(Quartz.kCGHIDEventTap, up)
+

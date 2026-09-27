@@ -56,3 +56,4 @@ class Workspace:
         if self.credential.exists():
             self.credential.write_text("{}\n", encoding="utf-8")
             os.chmod(self.credential, 0o600)
+

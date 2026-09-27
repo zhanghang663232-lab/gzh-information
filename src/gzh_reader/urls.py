@@ -41,3 +41,4 @@ def article_stable_key(
 
 def redact(value: str) -> str:
     return SENSITIVE.sub(lambda m: f"{m.group(1)}{m.group(2)}[REDACTED]", value)
+
