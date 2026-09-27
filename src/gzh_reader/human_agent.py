@@ -180,6 +180,35 @@ def menu_matches_article_tab(
     return not later_labels or menu_x < min(later_labels)
 
 
+def verified_article_menu_center(
+    title: str, lines: list[OcrLine], window_width: float,
+    centers: list[tuple[float, float]],
+) -> tuple[float, float] | None:
+    """Select the sole visual menu belonging to the verified article tab."""
+    matches = [center for center in centers
+               if menu_matches_article_tab(title, lines, window_width, center[0])
+               and 10 <= center[1] <= 42]
+    return matches[0] if len(matches) == 1 else None
+
+
+def select_article_browser(
+    title: str, account_name: str,
+    observed: list[tuple[Window, list[OcrLine]]],
+) -> Window | None:
+    """Choose a unique visible window by article evidence, never list order."""
+    for predicate in (
+        lambda window, lines: article_title_visible(title, lines),
+        lambda window, lines: bool(target_article_tabs(title, lines, window.width)),
+        lambda window, lines: profile_matches_account(lines, account_name),
+    ):
+        matches = [window for window, lines in observed if predicate(window, lines)]
+        if len(matches) > 1:
+            return None
+        if matches:
+            return matches[0]
+    return None
+
+
 def tab_menu_x(lines: list[OcrLine], window_width: float) -> float | None:
     """Estimate the last tab's menu from observed tab spacing, never window width alone."""
     labels = sorted(
@@ -637,7 +666,9 @@ class MacHumanController:
             raise RuntimeError("微信窗口 OCR 返回了无效结果") from exc
         return sorted(lines, key=lambda item: (item.y, item.x))
 
-    def article_menu_center(self, window: Window) -> tuple[float, float]:
+    def article_menu_center(
+        self, window: Window, title: str, header_lines: list[OcrLine],
+    ) -> tuple[float, float]:
         # Keep Quartz image objects out of the long-lived controller. A base
         # window screenshot in this process made the next child display
         # capture stall; two isolated captures do not share that state.
@@ -654,9 +685,13 @@ class MacHumanController:
             centers = json.loads(result.stdout)["centers"]
         except (ValueError, KeyError, TypeError) as exc:
             raise RuntimeError("文章菜单图标识别结果无效") from exc
-        if len(centers) != 1:
-            raise RuntimeError("未找到唯一的文章圆形菜单按钮，已停止")
-        return tuple(centers[0])
+        center = verified_article_menu_center(
+            title, header_lines, window.width,
+            [tuple(candidate) for candidate in centers],
+        )
+        if center is None:
+            raise RuntimeError("未找到唯一且属于目标文章标签的菜单按钮，已停止")
+        return center
 
     def click(self, x: float, y: float) -> None:
         q = self.Quartz
@@ -875,7 +910,25 @@ class MacHumanController:
         ocr_timeout_retried = False
         unconfirmed_observations = 0
         while time.monotonic() < deadline:
-            browser = self.window("微信 (窗口)")
+            candidates = self.browser_windows()
+            if len(candidates) == 1:
+                browser = candidates[0]
+            elif len(candidates) > 1:
+                observed = []
+                for candidate in candidates:
+                    try:
+                        observed.append((candidate, self.ocr(candidate, top_fraction=0.3)))
+                    except RuntimeError:
+                        continue
+                browser = select_article_browser(
+                    title, self.tabbed_profile_account, observed
+                )
+                if browser is None:
+                    raise ArticleNotOpenedError(
+                        "多个同名微信窗口中无法唯一确认目标文章或其公众号主页；已停止"
+                    )
+            else:
+                browser = None
             if browser is not None:
                 try:
                     lines = self.ocr(browser, top_fraction=0.3)
@@ -1200,6 +1253,8 @@ class MacHumanController:
         return body
 
     def copy_link(self, title: str | None = None) -> str:
+        if not title:
+            raise RuntimeError("缺少目标文章标题；拒绝打开可能属于其他标签的菜单")
         browser = self.active_article_window() or self.window("微信 (窗口)")
         if browser is None:
             raise RuntimeError("文章窗口已消失，拒绝操作菜单")
@@ -1209,7 +1264,7 @@ class MacHumanController:
         header_lines = self.ocr(browser, top_fraction=0.4)
         if title and not article_title_visible(title, header_lines):
             raise RuntimeError("当前文章标题未确认，拒绝打开链接菜单")
-        menu_x, menu_y = self.article_menu_center(browser)
+        menu_x, menu_y = self.article_menu_center(browser, title, header_lines)
         if title and not menu_matches_article_tab(
             title, header_lines, browser.width, menu_x
         ):

@@ -33,6 +33,8 @@ from gzh_reader.human_agent import (
     target_article_tab,
     target_article_tabs,
     menu_matches_article_tab,
+    verified_article_menu_center,
+    select_article_browser,
     titles_conflict,
     tab_menu_x,
     unique_known_cards,
@@ -145,7 +147,7 @@ def test_copy_link_finds_dropdown_inside_article_window(monkeypatch):
     controller.window = lambda title: browser if title == "微信 (窗口)" else None
     controller.windows = lambda: [browser]
     controller.hotkey = lambda key, flags: None
-    controller.article_menu_center = lambda window: (835, 24)
+    controller.article_menu_center = lambda window, title, lines: (835, 24)
     controller.require_foreground = lambda window: None
     clicked = []
     controller.click = lambda x, y: clicked.append((x, y))
@@ -186,7 +188,7 @@ def test_copy_link_stops_before_menu_when_article_title_is_missing():
     controller.require_foreground = lambda window: None
     controller.dismiss_miniprogram_prompt = lambda: False
     controller.ocr = lambda window, **kwargs: [line("其他文章标题", 100)]
-    controller.article_menu_center = lambda window: pytest.fail("标题不符时不能定位菜单")
+    controller.article_menu_center = lambda window, title, lines: pytest.fail("标题不符时不能定位菜单")
     controller.click = lambda x, y: pytest.fail("标题不符时不能点击")
     with pytest.raises(RuntimeError, match="标题未确认"):
         controller.copy_link("被称为监狱中的监狱，严管队里有多难熬？")
@@ -202,7 +204,7 @@ def test_copy_link_rejects_menu_on_other_article_tab():
     controller.ocr = lambda window, **kwargs: [
         line(title[:18], 10, 680), line(title, 100, 300),
     ]
-    controller.article_menu_center = lambda window: (410, 24)
+    controller.article_menu_center = lambda window, title, lines: (410, 24)
     controller.click = lambda x, y: pytest.fail("菜单不属于目标标签时不能点击")
     with pytest.raises(RuntimeError, match="不属于目标文章标签"):
         controller.copy_link(title)
@@ -215,7 +217,7 @@ def test_copy_link_identifies_ai_agreement_without_accepting_it(monkeypatch):
     controller.window = lambda name: browser
     controller.require_foreground = lambda window: None
     controller.dismiss_miniprogram_prompt = lambda: False
-    controller.article_menu_center = lambda window: (835, 24)
+    controller.article_menu_center = lambda window, title, lines: (835, 24)
     controller.ocr = lambda window, **kwargs: (
         [line("微信小微功能服务协议", 250)]
         if kwargs.get("visible") and "region" not in kwargs else
@@ -267,6 +269,49 @@ def test_menu_validation_ignores_wechat_ai_toolbar_but_not_another_tab():
     assert not menu_matches_article_tab(title, [target, other_tab], 1077, 1036)
 
 
+def test_verified_menu_selects_only_target_tab_when_other_menus_exist():
+    title = "亲人刚进监狱那几个月，家属千万别做这件事"
+    lines = [line("其他文章标题", 10, 300), line(title[:18], 10, 680)]
+    assert verified_article_menu_center(
+        title, lines, 1022, [(410, 24), (835, 24)]
+    ) == (835, 24)
+    assert verified_article_menu_center(
+        title, lines, 1022, [(835, 24), (850, 24)]
+    ) is None
+    assert verified_article_menu_center(
+        title, lines, 1022, [(410, 24)]
+    ) is None
+
+
+def test_article_browser_selection_prefers_verified_title_over_first_error_window():
+    title = "亲人刚进监狱那几个月，家属千万别做这件事"
+    error = Window(41, "微信 (窗口)", 0, 0, 440, 751, 0, 123, True, 1)
+    article = Window(42, "微信 (窗口)", 450, 0, 900, 800, 0, 123, True, 1)
+    observed = [
+        (error, [line("页面无法访问", 80)]),
+        (article, [line(title, 100), line("正文" * 40, 200)]),
+    ]
+    assert select_article_browser(title, "监所家属", observed) == article
+    assert select_article_browser(title, "监所家属", observed[:1]) is None
+    assert select_article_browser(title, "监所家属", observed + [observed[1]]) is None
+
+
+def test_wait_article_uses_verified_second_window_not_first_error_page():
+    title = "亲人刚进监狱那几个月，家属千万别做这件事"
+    error = Window(41, "微信 (窗口)", 0, 0, 440, 751, 0, 123, True, 1)
+    article = Window(42, "微信 (窗口)", 450, 0, 900, 800, 0, 123, True, 1)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "监所家属"
+    controller.browser_windows = lambda: [error, article]
+    controller.ocr = lambda window, **kwargs: (
+        [line("页面无法访问", 80)] if window.number == 41
+        else [line(title, 100), line("正文" * 40, 200)]
+    )
+    controller.click = lambda *args: pytest.fail("目标文章已显示，不能点击其他窗口")
+    assert controller.wait_article(title, timeout=1) == article
+    assert controller.active_article_number == article.number
+
+
 def test_account_tab_allows_ocr_prefix_but_not_search_tab():
     account = line("X 监所家属", 10, 326)
     search = line("六 监所家属-搜一搜", 10, 549)
@@ -279,6 +324,7 @@ def test_wait_article_selects_target_tab_even_if_another_article_is_active(monke
     controller = MacHumanController.__new__(MacHumanController)
     controller.tabbed_profile_account = "监所家属"
     controller.window = lambda title: browser
+    controller.browser_windows = lambda: [browser]
     clicked = []
     controller.click = lambda x, y: clicked.append((x, y))
     title = "亲人刚进监狱那几个月，家属千万别做这件事"
@@ -296,6 +342,7 @@ def test_wait_article_restores_scroll_position_before_title_check(monkeypatch):
     controller = MacHumanController.__new__(MacHumanController)
     controller.tabbed_profile_account = "监所家属"
     controller.window = lambda title: browser
+    controller.browser_windows = lambda: [browser]
     title = "亲人刚进监狱那几个月，家属千万别做这件事"
     tab = OcrLine("• 亲人刚进监狱那几个月...", 680, 10, 130, 20)
     clicks = []
@@ -320,6 +367,7 @@ def test_wait_article_accepts_visible_title_on_short_image_article():
     controller = MacHumanController.__new__(MacHumanController)
     controller.tabbed_profile_account = "监所家属"
     controller.window = lambda name: browser
+    controller.browser_windows = lambda: [browser]
     controller.ocr = lambda window, **kwargs: [line("亲人入狱后最该知道的事情", 90)]
     controller.click = lambda *args: pytest.fail("已显示的标题不应导致重复点击")
     assert controller.wait_article("亲人入狱后最该知道的事情") == browser
@@ -643,6 +691,7 @@ def test_tabbed_article_must_replace_profile_before_capture(monkeypatch):
     controller = MacHumanController.__new__(MacHumanController)
     controller.tabbed_profile_account = "监所家属"
     controller.window = lambda title: browser if title == "微信 (窗口)" else None
+    controller.browser_windows = lambda: [browser]
     controller.ocr = lambda window, **kwargs: [line("监所家属", 90), line("301篇原创内容", 190)]
     monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
     monkeypatch.setattr("gzh_reader.human_agent.time.monotonic", iter([0, 0, 9]).__next__)
@@ -655,6 +704,7 @@ def test_wait_article_switches_only_to_observed_target_tab(monkeypatch):
     controller = MacHumanController.__new__(MacHumanController)
     controller.tabbed_profile_account = "监所家属"
     controller.window = lambda title: browser
+    controller.browser_windows = lambda: [browser]
     clicked = []
     controller.click = lambda x, y: clicked.append((x, y))
 
@@ -681,6 +731,7 @@ def test_wait_article_recovers_duplicate_title_tabs_by_clicking_label(monkeypatc
     controller = MacHumanController.__new__(MacHumanController)
     controller.tabbed_profile_account = "监所家属"
     controller.window = lambda name: browser
+    controller.browser_windows = lambda: [browser]
     clicked = []
     controller.click = lambda x, y: clicked.append((x, y))
 
@@ -711,6 +762,7 @@ def test_wait_article_retries_one_ocr_timeout_without_clicking(monkeypatch):
     controller = MacHumanController.__new__(MacHumanController)
     controller.tabbed_profile_account = "监所家属"
     controller.window = lambda name: browser
+    controller.browser_windows = lambda: [browser]
     controller.click = lambda x, y: pytest.fail("OCR 超时重试不能点击界面")
     calls = []
 
@@ -878,6 +930,7 @@ def test_wait_article_cancels_centered_miniprogram_prompt_and_stops(monkeypatch)
     controller = MacHumanController.__new__(MacHumanController)
     controller.tabbed_profile_account = "监所家属"
     controller.window = lambda title: browser
+    controller.browser_windows = lambda: [browser]
     controller.ocr = lambda window, **kwargs: (
         [line("旧文章", 80)] if "top_fraction" in kwargs
         else [line("即将打开小程序", 400)]
