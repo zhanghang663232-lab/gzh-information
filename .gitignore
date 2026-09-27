@@ -22,4 +22,9 @@ audit/
 *cookie*
 *proxy-state*
 .env
-
+.env.*
+*.log
+*.pem
+*.p12
+*.pfx
+*.sqlite3-*

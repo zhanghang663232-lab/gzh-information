@@ -45,6 +45,8 @@ def test_package_excludes_runtime_and_has_reproducible_checksums_and_permissions
         names = {name.removeprefix(prefix) for name in bundle.namelist()}
         assert names == set(package_mac.REQUIRED_FILES) | {"src/gzh_reader/__init__.py", "PACKAGE-MANIFEST.json"}
         assert "docs/acceptance/run-2026-09-27.md" in names
+        assert "AGENTS.md" in names
+        assert "docs/README.md" in names
         assert "docs/doubao-handoff.md" not in names
         manifest = json.loads(bundle.read(prefix + "PACKAGE-MANIFEST.json"))
         for path, digest in manifest["files"].items():

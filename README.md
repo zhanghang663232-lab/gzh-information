@@ -1,6 +1,15 @@
-# gzh-information v2
+# gzh-information v2（Mac alpha）
 
-> **你正在阅读 Mac v2 alpha。** GitHub 默认 `main` 仍是旧版实验；从仓库首页下载默认分支会拿到 `wechat-archive`，不是这里的 Mac 程序。请在 GitHub 分支菜单选 `codex/v2-macos-validated` 后再下载 ZIP。给豆包、DeepSeek 等助手运行时，依次阅读 [构建复盘](docs/build-history.md)、[故障手册](docs/troubleshooting.md) 和 [Agent 起步说明](docs/agent-start.md)，不要执行 `wechat-archive/scripts/archive_account.py`。v2 的草稿 PR 暂不合并，原因是全量验收尚未通过。
+> **先确认分支。** GitHub 默认 `main` 是旧版实验；Mac 桌面微信方案在 [`codex/v2-macos-validated`](https://github.com/zhanghang663232-lab/gzh-information/tree/codex/v2-macos-validated)。请从这个分支下载 ZIP。旧 `wechat-archive/` 位于 `main`，不在本 v2 分支内，不要用它的导出服务脚本验证 Mac 方案。v2 的 [草稿 PR #2](https://github.com/zhanghang663232-lab/gzh-information/pull/2) 尚未合并；这不是“已全量读取”的发布版。
+
+首次使用请看下方“双击使用”。豆包、DeepSeek、Codex 等接手时先读 [AGENTS.md](AGENTS.md) 和 [文档索引](docs/README.md)，再依据 [故障手册](docs/troubleshooting.md) 处理具体错误。
+
+| 能力 | 当前状态 |
+| --- | --- |
+| Mac 微信界面读取正文 | 曾完成目标账号单轮 10 篇小样本；新版微信 4.x 的窗口/复制链接回归仍需重新实机验证 |
+| 整个账号历史文章 | **未完成**；当前没有可证明的完整列表末尾 |
+| 阅读、点赞、转发、评论等 | 分字段记录；分享、旧点赞和公开评论明细尚未通过验收 |
+| DeepSeek / 豆包 | 可选的公开列表 OCR 复核和受限排序适配器；不能替代本机电脑操作，真实豆包连接尚未验证 |
 
 面向 Apple Silicon Mac 的微信公众号公开数据归档原型。当前优先验证少量桌面微信界面采集，形成可复用流程；再由确定性程序分批续采，可选用低消耗模型复核难识别的公开列表文字。它尚未完成目标账号全量读取。文章正文和可见互动字段分别记账；缺失字段保持未知。
 
@@ -8,7 +17,7 @@
 
 2026-09-26 曾观察到新版微信主窗口的系统共享状态为 0；后续通过可读取的公众号/文章子窗口继续验证。可运行 `gzh-reader doctor --visual` 复查当前状态。首次仍需人在微信中打开目标公众号主页，不能宣称只贴链接即可从零自动进入账号。
 
-> 当前为 v2 alpha。原有脚本保留在 `wechat-archive/`，作为 legacy 流程继续存在一个版本周期。v2 是独立 clean-room 实现，没有复制 `Access_wechat_article` 的 CC BY-NC-SA 源码。
+> 当前为 v2 alpha。旧脚本保留在 GitHub 的 `main/wechat-archive/`，本 v2 分支是独立 clean-room 实现，没有复制 `Access_wechat_article` 的 CC BY-NC-SA 源码。
 
 ## 它是什么
 
@@ -98,7 +107,7 @@ gzh-reader proxy restore --state '<proxy-state.json>'
 
 - 微信不同版本的界面坐标、OCR 结果和文章卡片布局可能变化；状态机保留失败项并可从断点重试。
 - 每个列表视口和每篇文章都强制校验目标公众号名称；发现串号立即拒绝入库并从样例链接恢复。
-- 2026-09-27 实机单轮 10 篇端到端正文小样本通过：10 次打开、10 个不同 URL、10 份通过最低正文文件检查，目标工作区累计 66 份可核查正文；这是可行性证据，不证明每篇全文无遗漏，更不等于 302 篇全量。该 10 篇的阅读、点赞、评论计数均有值，分享数均缺失；`oldLikeNum` 与公开评论明细仍未达到目标。当前本地自动测试为 147 项。详见 [验收记录](docs/acceptance/run-2026-09-27.md)。
+- 2026-09-27 历史实机单轮 10 篇端到端正文小样本通过：10 次打开、10 个不同 URL、10 份通过最低正文文件检查，目标工作区累计 66 份可核查正文；这是当时版本的可行性证据，不证明每篇全文无遗漏，更不等于 302 篇全量。该 10 篇的阅读、点赞、评论计数均有值，分享数均缺失；`oldLikeNum` 与公开评论明细仍未达到目标。随后微信 4.x 的窗口/复制链接流程出现新回归，最近一次豆包运行新增 0 篇；当前修复已通过自动测试，但尚未重新通过单篇实机链路。详见 [验收记录](docs/acceptance/run-2026-09-27.md) 和 [故障手册](docs/troubleshooting.md)。
 - 首次试跑需要人在微信中打开目标账号主页，并填写主页名称。只粘贴链接就自动导航到主页仍是后续工作。
 - 长批次曾在微信 OCR/窗口操作阶段停滞；Vision OCR 现有 12 秒子进程硬超时，其他窗口操作的长批次恢复能力仍需实机验证。
 - 用户观察到连续读取约 30 篇后微信退出登录；原因尚未证实。程序现在限制每轮新增、打开次数和连续失败，避免重复打开已完成卡片，但不能保证微信不会再次要求登录。

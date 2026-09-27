@@ -14,9 +14,9 @@ import zipfile
 
 
 REQUIRED_FILES = (
-    "README.md", "LICENSE", "pyproject.toml", "uv.lock", ".gitignore",
+    "README.md", "AGENTS.md", "LICENSE", "pyproject.toml", "uv.lock", ".gitignore",
     "安装.command", "启动.command",
-    "docs/mac-delivery.md", "docs/agent-start.md", "docs/build-history.md",
+    "docs/README.md", "docs/mac-delivery.md", "docs/agent-start.md", "docs/build-history.md",
     "docs/troubleshooting.md", "docs/background-agent.md",
     "docs/batch-agent-plan.md", "docs/execution-plan-v3.md",
     "docs/feasibility-gate.md", "docs/first-principles-review.md",
