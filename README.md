@@ -1,5 +1,7 @@
 # gzh-information v2
 
+> **你正在阅读 Mac v2 alpha。** GitHub 默认 `main` 仍是旧版实验；从仓库首页下载默认分支会拿到 `wechat-archive`，不是这里的 Mac 程序。请在 GitHub 分支菜单选 `codex/v2-macos-validated` 后再下载 ZIP。给豆包、DeepSeek 等助手运行时，先发 [Agent 起步说明](docs/agent-start.md)，不要执行 `wechat-archive/scripts/archive_account.py`。v2 的草稿 PR 暂不合并，原因是全量验收尚未通过。
+
 面向 Apple Silicon Mac 的微信公众号公开数据归档原型。当前优先验证少量桌面微信界面采集，形成可复用流程；再由确定性程序分批续采，可选用低消耗模型复核难识别的公开列表文字。它尚未完成目标账号全量读取。文章正文和可见互动字段分别记账；缺失字段保持未知。
 
 下一阶段按 [Mac 批量读取执行计划 v3](docs/execution-plan-v3.md) 推进。最终目标是可续传的批量读取；10 篇只是验收门槛。2026-09-27 已在目标账号完成单轮 10 次打开、10 篇新增的桌面微信实机验证；正文批量路径可用，但账号全量列表和全部互动字段尚未达标，详见 [验收记录](docs/acceptance/run-2026-09-27.md)。DeepSeek 和豆包现可共用文章列表 OCR 复核器；基础 Agent 模式可排序当前视口的文章或暂停，完整的工具型 Agent 调度仍待实现。
@@ -30,7 +32,7 @@ SQLite 合并、续传、覆盖率审计、JSONL/CSV/Markdown/Obsidian 导出
 
 ## 双击使用（Mac）
 
-1. 下载仓库或 Release 压缩包，双击 `安装.command`。
+1. 确认已切到 `codex/v2-macos-validated` 分支，从该分支下载 ZIP 并解压，或使用同版 Apple Silicon 源码体验包；双击 `安装.command`。不要下载默认 `main` 分支。
 2. 在 Mac 微信中打开目标文章，点击公众号名称进入账号主页；核对主页名称。
 3. 双击 `启动.command`，在中文向导中填写文章链接、主页名称和输出目录。
 4. 保留默认的“本轮最多新增 5 篇”进行试跑；“工作区累计保存上限”可留空。勾选桌面操作确认并开始。
