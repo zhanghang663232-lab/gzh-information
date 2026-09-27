@@ -1,6 +1,6 @@
 # gzh-information v2
 
-> **你正在阅读 Mac v2 alpha。** GitHub 默认 `main` 仍是旧版实验；从仓库首页下载默认分支会拿到 `wechat-archive`，不是这里的 Mac 程序。请在 GitHub 分支菜单选 `codex/v2-macos-validated` 后再下载 ZIP。给豆包、DeepSeek 等助手运行时，先发 [Agent 起步说明](docs/agent-start.md)，不要执行 `wechat-archive/scripts/archive_account.py`。v2 的草稿 PR 暂不合并，原因是全量验收尚未通过。
+> **你正在阅读 Mac v2 alpha。** GitHub 默认 `main` 仍是旧版实验；从仓库首页下载默认分支会拿到 `wechat-archive`，不是这里的 Mac 程序。请在 GitHub 分支菜单选 `codex/v2-macos-validated` 后再下载 ZIP。给豆包、DeepSeek 等助手运行时，依次阅读 [构建复盘](docs/build-history.md)、[故障手册](docs/troubleshooting.md) 和 [Agent 起步说明](docs/agent-start.md)，不要执行 `wechat-archive/scripts/archive_account.py`。v2 的草稿 PR 暂不合并，原因是全量验收尚未通过。
 
 面向 Apple Silicon Mac 的微信公众号公开数据归档原型。当前优先验证少量桌面微信界面采集，形成可复用流程；再由确定性程序分批续采，可选用低消耗模型复核难识别的公开列表文字。它尚未完成目标账号全量读取。文章正文和可见互动字段分别记账；缺失字段保持未知。
 
