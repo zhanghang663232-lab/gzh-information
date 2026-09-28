@@ -10,9 +10,9 @@
 
 ## 第二关：核对目标和工作区
 
-本次示例账号是 `Netskao`，起始文章链接是 `https://mp.weixin.qq.com/s/cleXgWkz9UlinSLeQdLefQ`。用户可替换为其他公开公众号，届时要用该账号独立工作区。**唯一续传位置**为 `/Users/zhanghang/Downloads/obsidian/公众号读取/Netskao`；截至 2026-09-28 有 **5 篇**通过最低正文长度检查，列表未完成。旧的 1 篇工作区和原始 5 篇工作区仍可能存在；不要选错、覆盖或再次新建第二份工作区。先核对该目录的 `database/archive.sqlite3`、`audit/human-agent-progress.json` 和账号名；不上传任何采集数据到云端或 GitHub。
+本次示例账号是 `Netskao`，起始文章链接是 `https://mp.weixin.qq.com/s/cleXgWkz9UlinSLeQdLefQ`。用户可替换为其他公开公众号，届时要用该账号独立工作区。**唯一续传位置**为 `/Users/zhanghang/Downloads/obsidian/公众号读取/Netskao`；截至 2026-09-28 有 **5 篇**通过最低正文长度检查，列表未完成，转发数 0/5。旧的 1 篇工作区和原始 5 篇工作区仍可能存在；不要选错、覆盖或再次新建第二份工作区。先核对该目录的 `database/archive.sqlite3`、`audit/human-agent-progress.json` 和账号名；不上传任何采集数据到云端或 GitHub。
 
-已知旧轮次卡在 `account_mismatch`、`copy_link_failed`；新一轮第 6 篇卡在标题 OCR 乱码与主页标签恢复（`article_not_opened` / `profile_restore_failed`）。微信 4.x 的窄标签可能隐藏文章菜单；执行器在不能唯一确认菜单时会停，不应让模型猜坐标。新增的前台 OCR 复核和单窗口回页顶逻辑只有自动测试证据，尚无微信实机通过收据。
+已知旧轮次卡在 `account_mismatch`、`copy_link_failed`；新一轮第 6 篇已打开但 `copy_link` 单次 OCR 复扫读不到标题。现已加三次窗口级只读复核和一次前台只读复核；全部失败仍拒绝点菜单。微信 4.x 的窄标签可能隐藏文章菜单，不能让模型猜坐标。这些修改只有自动测试证据，尚无新一轮微信实机通过收据。
 
 ## 第三关：本机命令可用时直接执行
 
@@ -46,7 +46,7 @@ cd '<仓库目录>'
 - `link_copy_failed`、`account_mismatch`、`profile_restore_failed`、`wechat_login_required`、窗口不可读、小程序弹窗：停止当前尝试，查 [故障总账](incident-ledger.md) 和 [故障手册](troubleshooting.md)，提交脱敏收据；不要盲点或无限重试。
 - `scroll_failed`、`viewport_repeated_without_new_articles`：也不能单独证明历史列表已到末尾。当前程序可能保持 `complete=false`；不得因为主页写着 1271 篇或 SQLite 数量接近它就声称全量。
 
-只有完整列表末尾证据、正文覆盖率、五个指标逐字段覆盖率、可见评论明细状态和缺失清单都经过审计，才报告“全量”。否则报告**已保存的实际篇数和下一处卡点**。仓库不上传数据库、文章正文、截图原件、聊天、Cookie 或 API key。
+只有完整列表末尾证据，且每篇可访问文章的正文、阅读、点赞、转发四项均有值（数字 0 也算已观测），`required_fields_complete=true`，才报告“全量”。评论、旧版点赞另行报告覆盖率；它们不能替代四项硬条件。否则报告**已保存的实际篇数、转发缺失数和下一处卡点**。仓库不上传数据库、文章正文、截图原件、聊天、Cookie 或 API key。
 
 ## 直接发给豆包的一句话
 

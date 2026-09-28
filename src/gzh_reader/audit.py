@@ -32,6 +32,7 @@ def security_scan(root: Path) -> list[dict[str, str]]:
 
 
 def audit_workspace(store: Store, root: Path) -> dict:
+    required_metric_fields = ("readNum", "likeNum", "shareNum")
     total = store.rows("SELECT COUNT(*) AS n FROM articles")[0]["n"]
     eligible = store.rows(
         "SELECT COUNT(*) AS n FROM articles WHERE status NOT IN ('deleted','restricted')"
@@ -69,17 +70,24 @@ def audit_workspace(store: Store, root: Path) -> dict:
         "SELECT provider,cursor,page_fingerprint,completed,updated_at FROM checkpoints ORDER BY updated_at DESC LIMIT 1"
     )
     report = {
-        "definition": "全量=完整枚举可发现文章，并明确记录每个不可得项；互动数据为采集时快照。正文 ok 仅表示通过最低长度检查，不证明文章完整。",
+        "definition": "本项目全量=完整枚举可发现文章，且每篇可访问文章有正文、阅读量、点赞数、转发数；缺失必须显式列出，不能当零。互动数据为采集时快照；正文 ok 仅通过最低长度检查，不证明逐字完整。",
         "articles_discovered": total,
         "list": list_state[0] if list_state else {"completed": 0, "reason": "没有列表检查点"},
         "articles_accessible": eligible,
         "content": {"ok": content_ok, "quality_level": "minimum_body_length_only",
                     "coverage": (content_ok / eligible if eligible else 0),
-                    "gate": 0.95, "invalid_ok_claims": len(invalid_claims)},
+                    "gate": 1.0, "invalid_ok_claims": len(invalid_claims)},
         "metrics": {
-            field: {"ok": count, "coverage": (count / eligible if eligible else 0), "gate": 0.98}
+            field: {"ok": count, "coverage": (count / eligible if eligible else 0),
+                    "gate": 1.0 if field in required_metric_fields else None}
             for field, count in metric_counts.items()
         },
+        "required_fields": ["content", *required_metric_fields],
+        "required_fields_complete": bool(
+            eligible and list_state and list_state[0]["completed"]
+            and content_ok == eligible and not invalid_claims
+            and all(metric_counts[field] == eligible for field in required_metric_fields)
+        ),
         "missing": store.rows("SELECT article_key,layer,status,reason,captured_at FROM missing_records ORDER BY layer,article_key")
                    + invalid_claims,
         "security_findings": security_scan(root),

@@ -104,7 +104,12 @@ def probe_wechat(controller=None) -> dict:
                         "微信文章窗口存在但不在当前可见桌面；请手动在微信打开目标文章"
                         if offscreen_article else "微信内容窗口当前不可见"
                     )}
-        window = max(candidates, key=lambda item: item.width * item.height)
+        # The larger chat window may be intentionally unshared while the
+        # article WebView remains readable; diagnose the latter first.
+        window = max(candidates, key=lambda item: (
+            item.title == "微信 (窗口)", item.title == "公众号",
+            item.sharing_state != 0, item.width * item.height,
+        ))
         line_count = len(controller.ocr(window))
         display_lines = None
         if not line_count and controller.__class__.__name__ == "MacHumanController":

@@ -77,3 +77,21 @@ def test_wechat_visual_probe_identifies_offscreen_article_window():
     result = probe_wechat(Controller())
     assert result["capture_readable"] is False
     assert "不在当前可见桌面" in result["reason"]
+
+
+def test_wechat_visual_probe_prefers_article_over_larger_unshared_chat():
+    chat = Window(4, "微信", 0, 0, 1300, 900, 0, 123, True, 0)
+    article = Window(5, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True, 1)
+
+    class Controller:
+        def activate(self):
+            pass
+
+        def windows(self):
+            return [chat, article]
+
+        def ocr(self, item):
+            assert item == article
+            return [OcrLine("文章标题", 0, 0, 50, 20)]
+
+    assert probe_wechat(Controller())["capture_readable"] is True

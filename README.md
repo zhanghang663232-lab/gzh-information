@@ -99,7 +99,7 @@ gzh-reader proxy restore --state '<proxy-state.json>'
 ## 完整性门槛
 
 - 可访问正文覆盖率目标：≥95%。
-- `readNum`、`likeNum`、`oldLikeNum`、`shareNum`、`commentNum` 各自覆盖率目标：≥98%。
+- 本项目的“全量完成”硬条件：可发现文章列表有末尾证据，且每篇可访问文章都有可核对正文、`readNum`（阅读）、`likeNum`（点赞）、`shareNum`（转发）；四项逐篇均须 100%，缺失不能冒充 0。`oldLikeNum`、`commentNum` 和评论明细单独报告，不代替这四项。
 - 数字 `0` 原样保存；`100001` 原样标记为平台返回的封顶值，不自行推算。
 - 桌面 Agent 只有在出现可验证的列表末尾时才标记完整；主页显示的“原创内容”数量本身不是完整性证明。
 

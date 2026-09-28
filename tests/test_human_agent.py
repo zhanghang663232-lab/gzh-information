@@ -212,6 +212,52 @@ def test_copy_link_stops_before_menu_when_article_title_is_missing():
         controller.copy_link("被称为监狱中的监狱，严管队里有多难熬？")
 
 
+def test_copy_link_rechecks_title_without_clicking_or_switching_tabs(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 1022, 768, 0, 123)
+    title = "iPhone 防抢夺功能要来了！iOS 27.2新版发布"
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.window = lambda name: browser
+    controller.require_foreground = lambda window: None
+    controller.dismiss_miniprogram_prompt = lambda: False
+    calls = []
+
+    def ocr(window, **kwargs):
+        calls.append(kwargs)
+        if len(calls) == 1:
+            return [line("乱码标签", 15)]
+        return [line(title[:17], 10, 680), line(title, 100, 300)]
+
+    controller.ocr = ocr
+    controller.click = lambda *args: pytest.fail("标题复核阶段不得点击")
+    controller.article_menu_center = lambda window, expected, lines: (
+        pytest.fail("应通过重试进入菜单核对")
+        if not article_title_visible(title, lines) else (410, 24)
+    )
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    with pytest.raises(RuntimeError, match="不属于目标文章标签"):
+        controller.copy_link(title)
+    assert calls[:2] == [{"top_fraction": 0.4}, {"top_fraction": 0.4}]
+
+
+def test_copy_link_title_failure_records_bounded_nontext_diagnostics(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.window = lambda name: browser
+    controller.require_foreground = lambda window: None
+    controller.dismiss_miniprogram_prompt = lambda: False
+    calls = []
+    controller.ocr = lambda window, **kwargs: (calls.append(kwargs) or [line("其他文章标题", 100)])
+    controller.click = lambda *args: pytest.fail("标题不符时不得点击")
+    controller.article_menu_center = lambda *args: pytest.fail("标题不符时不得找菜单")
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    with pytest.raises(RuntimeError, match="标题未确认") as raised:
+        controller.copy_link("被称为监狱中的监狱，严管队里有多难熬？")
+    assert len(calls) == 4
+    assert calls[-1]["visible"] is True
+    assert len(raised.value.ocr_diagnostics) == 4
+    assert "其他文章标题" not in str(raised.value.ocr_diagnostics)
+
+
 def test_copy_link_rejects_menu_on_other_article_tab():
     browser = Window(42, "微信 (窗口)", 0, 0, 1022, 768, 0, 123)
     title = "亲人刚进监狱那几个月，家属千万别做这件事"

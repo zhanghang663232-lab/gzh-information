@@ -1436,9 +1436,37 @@ class MacHumanController:
         self.require_foreground(browser)
         if self.dismiss_miniprogram_prompt():
             raise MiniProgramInterceptedError("小程序弹窗已取消，拒绝继续复制链接")
-        header_lines = self.ocr(browser, top_fraction=0.4)
-        if title and not article_title_visible(title, header_lines):
-            raise RuntimeError("当前文章标题未确认，拒绝打开链接菜单")
+        header_lines: list[OcrLine] = []
+        observations: list[dict] = []
+        for attempt in range(4):
+            self.require_foreground(browser)
+            try:
+                if attempt == 3:
+                    # Read-only fallback for a stale Quartz window frame.
+                    # The body title, not a garbled tab label, must match.
+                    header_lines = self.ocr(
+                        browser, visible=True,
+                        region=(0, 0, browser.width, min(360, browser.height)),
+                    )
+                else:
+                    header_lines = self.ocr(browser, top_fraction=0.4)
+            except RuntimeError as exc:
+                observations.append({"sample": attempt + 1, "error": type(exc).__name__})
+                header_lines = []
+            else:
+                observations.append({
+                    "sample": attempt + 1, "line_count": len(header_lines),
+                    "body_line_ys": [round(line.cy) for line in header_lines
+                                     if 55 <= line.cy <= 360][:12],
+                })
+            if article_title_visible(title, header_lines):
+                break
+            if attempt < 3:
+                time.sleep(0.4)
+        else:
+            error = RuntimeError("当前文章标题未确认，拒绝打开链接菜单")
+            error.ocr_diagnostics = observations
+            raise error
         menu_x, menu_y = self.article_menu_center(browser, title, header_lines)
         if title and not menu_matches_article_tab(
             title, header_lines, browser.width, menu_x
@@ -2139,6 +2167,7 @@ class MacHumanAccountCollector:
                         "card_count": len(cards),
                         "step": failure_step, "error_type": type(exc).__name__,
                         "error": str(exc)[:240],
+                        "ocr_diagnostics": getattr(exc, "ocr_diagnostics", None),
                     })
                     self.progress("human_retry", {
                         "title": card.title,

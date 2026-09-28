@@ -110,6 +110,27 @@ def test_audit_uses_latest_metric_snapshot_and_preserves_zero(tmp_path: Path):
     assert report["content"]["quality_level"] == "minimum_body_length_only"
 
 
+def test_full_account_requires_body_read_like_and_share_for_every_article(tmp_path: Path):
+    store = Store(tmp_path / "database" / "archive.sqlite3")
+    (tmp_path / "raw").mkdir()
+    (tmp_path / "raw" / "article.md").write_text("这是可核对的文章正文。" * 30, encoding="utf-8")
+    with store.connect() as db:
+        db.execute("INSERT INTO accounts(biz,name,status) VALUES('b','账号','ok')")
+        db.execute("INSERT INTO articles(stable_key,biz,url,status) VALUES('one','b','https://mp.weixin.qq.com/s/one','ok')")
+        db.execute("INSERT INTO content_snapshots(article_key,markdown_path,status) VALUES('one','raw/article.md','ok')")
+        db.execute("INSERT INTO metric_snapshots(article_key,readNum,likeNum,shareNum,status) VALUES('one',0,0,NULL,'missing')")
+    store.set_checkpoint("mac_human_agent", "b", "1", "fingerprint", True)
+    report = audit_workspace(store, tmp_path)
+    assert report["required_fields"] == ["content", "readNum", "likeNum", "shareNum"]
+    assert report["required_fields_complete"] is False
+    assert report["metrics"]["readNum"]["ok"] == 1
+    assert report["metrics"]["likeNum"]["ok"] == 1
+    assert report["metrics"]["shareNum"]["ok"] == 0
+    with store.connect() as db:
+        db.execute("INSERT INTO metric_snapshots(article_key,readNum,likeNum,shareNum,status) VALUES('one',0,0,0,'ok')")
+    assert audit_workspace(store, tmp_path)["required_fields_complete"] is True
+
+
 def test_credential_file_is_scrubbed_with_private_permissions(tmp_path: Path):
     workspace = Workspace.create(tmp_path, "账号")
     workspace.write_json("runtime/credential.json", {"cookie": "secret123"}, mode=0o600)
