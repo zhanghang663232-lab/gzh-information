@@ -2,7 +2,7 @@
 
 | 想做什么 | 从这里开始 |
 | --- | --- |
-| 让豆包尝试单个公众号整账号读取、分批续采和验收 | **[豆包整账号新入口](START-HERE-FULL-ACCOUNT.md)**、[详细运行手册](doubao-full-account-runbook.md) |
+| 让豆包启动本机程序并监督整账号读取 | **[豆包专用执行稿](DOUBAO-RUN-THIS.md)**、[详细运行手册](doubao-full-account-runbook.md) |
 | 在 Mac 上安装、双击启动 | [Mac 安装说明](mac-delivery.md) |
 | 让豆包、DeepSeek 或 Codex 接手小批量测试 | [Agent 起步说明](agent-start.md)、[故障手册](troubleshooting.md) |
 | 判断项目是否真的可用 | [可行性门槛](feasibility-gate.md)、[最近实机验收](acceptance/run-2026-09-27.md) |

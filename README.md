@@ -2,7 +2,7 @@
 
 > **先确认分支。** GitHub 默认 `main` 是旧版实验；Mac 桌面微信方案在 [`codex/v2-macos-validated`](https://github.com/zhanghang663232-lab/gzh-information/tree/codex/v2-macos-validated)。请从这个分支下载 ZIP。旧 `wechat-archive/` 位于 `main`，不在本 v2 分支内，不要用它的导出服务脚本验证 Mac 方案。v2 的 [草稿 PR #2](https://github.com/zhanghang663232-lab/gzh-information/pull/2) 尚未合并；这不是“已全量读取”的发布版。
 
-**要让豆包尝试整个账号：直接从 [2026-09-28 整账号交接入口](docs/START-HERE-FULL-ACCOUNT.md) 开始。** 详细步骤见 [运行手册](docs/doubao-full-account-runbook.md)。首次使用也可看下方“双击使用”。其他 Agent 先读 [AGENTS.md](AGENTS.md) 和 [文档索引](docs/README.md)。
+**要让豆包尝试整个账号：直接从 [豆包专用执行稿](docs/DOUBAO-RUN-THIS.md) 开始。** 它先检查豆包是否能运行本机命令；真正的微信点击由 `gzh-reader` 执行。详细步骤见 [运行手册](docs/doubao-full-account-runbook.md)。首次使用也可看下方“双击使用”。其他 Agent 先读 [AGENTS.md](AGENTS.md) 和 [文档索引](docs/README.md)。
 
 | 能力 | 当前状态 |
 | --- | --- |

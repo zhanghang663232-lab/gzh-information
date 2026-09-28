@@ -2,7 +2,7 @@
 
 本仓库当前工作分支是 `codex/v2-macos-validated`；GitHub 默认 `main` 仍是旧实验。不要把 `main/wechat-archive/` 的导出服务 API key 流程当成 Mac v2 的入口。用户目标是借助已登录的 **Mac 桌面微信界面**，先验证少量真实文章，再形成可续传的批量读取；最终希望读取一个公众号的公开文章、正文和普通用户可见的互动信息。
 
-**豆包整账号任务先读 [最新交接入口](docs/START-HERE-FULL-ACCOUNT.md)。** 再按 [详细运行手册](docs/doubao-full-account-runbook.md) 先验 1 篇真实 URL，然后运行不带篇数上限的持续读取与最终验收；不需每 10 篇手动重启，也不能跳过身份核对。
+**豆包整账号任务先读 [豆包专用执行稿](docs/DOUBAO-RUN-THIS.md)。** 豆包先检查能否运行本机命令；电脑点击由 `gzh-reader` 执行。再按 [详细运行手册](docs/doubao-full-account-runbook.md) 先验 1 篇真实 URL，然后运行不带篇数上限的持续读取与最终验收；不需每 10 篇手动重启，也不能跳过身份核对。
 
 ## 当前事实，不可升级为成功声明
 

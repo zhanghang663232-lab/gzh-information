@@ -1,5 +1,7 @@
 # 给豆包、DeepSeek、Codex 的 Mac v2 起步说明
 
+**豆包专用入口：[本机执行器启动与监督说明](DOUBAO-RUN-THIS.md)。** 豆包不需要亲自点击 Mac 微信；先检查能否运行本机命令，再由 `gzh-reader` 操作微信。若当前豆包会话没有本机命令执行能力，应明确说明并让用户双击启动，而不是不断重试不支持的桌面操作。
+
 本文件是**操作检查表**，不是“全量完成”声明。仓库默认 `main` 目前仍保留旧版 `wechat-archive`；当前 Mac 程序位于 `codex/v2-macos-validated` 分支。开始前先确认当前 README 第一行是 `# gzh-information v2`，并且根目录有 `安装.command`、`启动.command` 和 `src/gzh_reader/`。若只看到 `wechat-archive/scripts/archive_account.py`，你拿错了版本，先切换分支；不要索取 `down.mptext.top` API key 来替代当前路径。
 
 用户此次要求豆包尝试**整个账号**时，直接按 [整账号执行入口](START-HERE-FULL-ACCOUNT.md) 的试跑与验收规则推进；确认单篇后运行不带篇数上限的持续读取。本页保留为通用起步检查表。
