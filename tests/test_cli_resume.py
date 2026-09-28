@@ -2,10 +2,16 @@ from pathlib import Path
 
 import pytest
 
-from gzh_reader.cli import main
+from gzh_reader.cli import build_parser, main
 from gzh_reader.models import Account, Status
 from gzh_reader.storage import Store
-from gzh_reader.workspace import Workspace
+from gzh_reader.workspace import DEFAULT_OUTPUT_ROOT, Workspace
+
+
+def test_new_collection_defaults_to_local_obsidian_root():
+    parser = build_parser()
+    assert parser.parse_args(["collect", "--url", "https://mp.weixin.qq.com/s/example"]).output == DEFAULT_OUTPUT_ROOT
+    assert parser.parse_args(["recover-open", "--title", "x", "--account-name", "a", "--url", "https://mp.weixin.qq.com/s/example"]).output == DEFAULT_OUTPUT_ROOT
 
 
 def test_resume_uses_matching_human_account_and_current_profile(monkeypatch, tmp_path: Path):

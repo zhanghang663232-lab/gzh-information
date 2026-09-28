@@ -8,6 +8,11 @@ from pathlib import Path
 from typing import Any
 
 
+# Article data remains on the user's Mac; the Git repository contains code,
+# tests, and redacted documentation only. Callers may override this path.
+DEFAULT_OUTPUT_ROOT = Path.home() / "Downloads" / "obsidian" / "公众号读取"
+
+
 def safe_name(value: str) -> str:
     cleaned = re.sub(r"[\\/:*?\"<>|\x00-\x1f]", "_", value).strip(" .")
     return cleaned[:100] or "未知公众号"
@@ -56,4 +61,3 @@ class Workspace:
         if self.credential.exists():
             self.credential.write_text("{}\n", encoding="utf-8")
             os.chmod(self.credential, 0o600)
-

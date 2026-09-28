@@ -934,6 +934,8 @@ class MacHumanController:
         scrolled_target_to_top = False
         ocr_retry_after_scroll = False
         ocr_timeout_retried = False
+        visible_mismatch_checked = False
+        unlabelled_scroll_checked = False
         unconfirmed_observations = 0
         while time.monotonic() < deadline:
             candidates = self.browser_windows()
@@ -996,6 +998,22 @@ class MacHumanController:
                 ):
                     self.active_article_number = browser.number
                     return browser
+                if (last_state != "profile_still_active"
+                        and not visible_mismatch_checked and len(candidates) == 1):
+                    # Window capture can return stale/garbled text even when
+                    # the composited foreground contains the article title.
+                    # This is observation only; no tab/menu is selected.
+                    visible_mismatch_checked = True
+                    try:
+                        visible_lines = self.ocr(
+                            browser, visible=True,
+                            region=(0, 0, browser.width, min(260, browser.height)),
+                        )
+                    except RuntimeError:
+                        visible_lines = []
+                    if article_title_visible(title, visible_lines):
+                        self.active_article_number = browser.number
+                        return browser
                 unconfirmed_observations += 1
                 if unconfirmed_observations % 3 == 0:
                     # The permission dialog is centered below the cropped
@@ -1029,6 +1047,23 @@ class MacHumanController:
                     self.require_foreground(browser)
                     self.hotkey(126, self.Quartz.kCGEventFlagMaskCommand)
                     scrolled_target_to_top = True
+                    time.sleep(0.3)
+                    continue
+                if (last_state != "profile_still_active"
+                        and not matching_tabs and not unlabelled_scroll_checked
+                        and len(candidates) == 1):
+                    # The single active article may retain the previous
+                    # scroll position while its tab label is OCR-garbled.
+                    # Scroll only that foreground window to the top once;
+                    # never infer a title or click a different tab from it.
+                    if any("即将打开小程序" in line.text for line in self.ocr(browser)):
+                        self.dismiss_miniprogram_prompt()
+                        raise MiniProgramInterceptedError(
+                            "误点触发小程序弹窗，已取消并停止本轮"
+                        )
+                    self.require_foreground(browser)
+                    self.hotkey(126, self.Quartz.kCGEventFlagMaskCommand)
+                    unlabelled_scroll_checked = True
                     time.sleep(0.3)
                     continue
             time.sleep(0.3)
@@ -1179,13 +1214,11 @@ class MacHumanController:
         browser = self.window("微信 (窗口)")
         if browser is not None and browser.onscreen:
             # WeChat 4.1.15 can show a public-account profile as a tab in this
-            # same window. Closing it here would discard the exact profile the
-            # user prepared, so stop until the tabbed flow has its own state
-            # transitions and close-tab verification.
+            # same window. Reuse the already verified profile tab; closing it
+            # would discard the exact profile the user prepared.
             if account_name and profile_matches_account(self.ocr(browser), account_name):
-                raise RuntimeError(
-                    "目标公众号主页位于新版微信标签页；当前采集器尚未适配标签页，已停止且未关闭窗口"
-                )
+                self.tabbed_profile_account = account_name
+                return browser
             if account_name:
                 raise RuntimeError(
                     "微信中存在标签页，但未确认目标公众号主页；请先切换到目标主页，已停止且未关闭窗口"

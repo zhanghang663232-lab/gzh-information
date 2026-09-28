@@ -895,6 +895,56 @@ def test_wait_article_retries_one_ocr_timeout_without_clicking(monkeypatch):
     assert calls[1]["region"] == (0, 0, browser.width, 260)
 
 
+def test_wait_article_rechecks_garbled_header_on_visible_screen():
+    browser = Window(42, "微信 (窗口)", 0, 0, 1100, 768, 0, 123)
+    title = "iPhone 防抢夺功能要来了！iOS 27.2新版发布"
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "Netskao"
+    controller.browser_windows = lambda: [browser]
+    controller.click = lambda *args: pytest.fail("不得猜测标签坐标")
+    controller.ocr = lambda window, **kwargs: (
+        [line(title, 85), line("正文" * 50, 175)] if kwargs.get("visible")
+        else [line("044040404040&5272新版发布，iPhone..①", 16), line("正文" * 50, 175)]
+    )
+    assert controller.wait_article(title) == browser
+    assert controller.active_article_number == 42
+
+
+def test_wait_article_scrolls_single_unconfirmed_page_only_then_verifies(monkeypatch):
+    browser = Window(42, "微信 (窗口)", 0, 0, 1100, 768, 0, 123)
+    title = "iPhone 防抢夺功能要来了！iOS 27.2新版发布"
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "Netskao"
+    controller.browser_windows = lambda: [browser]
+    controller.require_foreground = lambda window: None
+    controller.Quartz = type("Q", (), {"kCGEventFlagMaskCommand": 1})
+    keys = []
+    controller.hotkey = lambda key, flags: keys.append((key, flags))
+    controller.click = lambda *args: pytest.fail("不得猜测标签坐标")
+    controller.ocr = lambda window, **kwargs: (
+        [line(title, 85), line("正文" * 50, 175)] if keys
+        else [line("旧文章底部" * 20, 175)]
+    )
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    assert controller.wait_article(title, timeout=1) == browser
+    assert keys == [(126, 1)]
+
+
+def test_open_profile_reuses_verified_wechat_4x_profile_tab():
+    browser = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.require_active_session = lambda: None
+    controller._tabbed_profile = lambda account: None
+    controller.browser_windows = lambda: []
+    controller.windows = lambda: [browser]
+    controller.window = lambda title: browser if title == "微信 (窗口)" else None
+    controller.activate = lambda: None
+    controller.ocr = lambda window: [line("Netskao", 80), line("1272篇原创内容", 130)]
+    controller._close_window = lambda window: pytest.fail("不能关闭已核对的公众号主页")
+    assert controller.open_profile("https://mp.weixin.qq.com/s/example", "Netskao") == browser
+    assert controller.tabbed_profile_account == "Netskao"
+
+
 def test_confirm_current_article_scrolls_to_top_without_switching_tabs():
     browser = Window(42, "微信 (窗口)", 0, 0, 1100, 768, 0, 123)
     controller = MacHumanController.__new__(MacHumanController)

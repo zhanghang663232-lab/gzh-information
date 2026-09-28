@@ -13,7 +13,7 @@ from .audit import audit_workspace
 from .exports import export_all
 from .proxy import MacProxyManager
 from .storage import Store
-from .workspace import Workspace, safe_name
+from .workspace import DEFAULT_OUTPUT_ROOT, Workspace, safe_name
 
 
 def _wechat_installed() -> bool:
@@ -55,7 +55,7 @@ def build_parser() -> argparse.ArgumentParser:
     sub = parser.add_subparsers(dest="command", required=True)
     collect = sub.add_parser("collect")
     collect.add_argument("--url", required=True)
-    collect.add_argument("--output", type=Path, default=Path.home() / "Documents" / "gzh-information-data")
+    collect.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_ROOT)
     collect.add_argument("--account-name", help="已在微信中打开的目标公众号名称")
     collect.add_argument("--max-articles", type=int, help="试跑时最多保存的文章总数；不填则持续读取")
     collect.add_argument("--max-new-articles", type=int, help="可选试跑上限；不填则持续读取目标账号")
@@ -68,7 +68,7 @@ def build_parser() -> argparse.ArgumentParser:
     recover.add_argument("--title", required=True)
     recover.add_argument("--account-name", required=True)
     recover.add_argument("--url", required=True, help="目标公众号已有的起始文章链接")
-    recover.add_argument("--output", type=Path, default=Path.home() / "Documents" / "gzh-information-data")
+    recover.add_argument("--output", type=Path, default=DEFAULT_OUTPUT_ROOT)
     resume = sub.add_parser("resume")
     resume.add_argument("--workspace", required=True, type=Path)
     resume.add_argument("--max-articles", type=int, help="试跑时最多保存的文章总数；不填则持续读取")

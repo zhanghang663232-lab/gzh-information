@@ -3,7 +3,8 @@ import queue
 
 from fastapi.testclient import TestClient
 
-from gzh_reader.web import STATE, app
+from gzh_reader.web import STATE, CollectRequest, app
+from gzh_reader.workspace import DEFAULT_OUTPUT_ROOT
 from gzh_reader.task_worker import run_collect_task
 
 
@@ -17,6 +18,8 @@ def test_home_and_foreground_consent_gate():
     assert "检查能否读取微信画面" in home.text
     assert "支持任意公开公众号" in home.text
     assert "例如：监所家属" not in home.text
+    assert str(DEFAULT_OUTPUT_ROOT) in home.text
+    assert CollectRequest(url="https://mp.weixin.qq.com/s/example").output == str(DEFAULT_OUTPUT_ROOT)
     STATE.update({"stage": "idle", "detail": {}, "running": False})
     response = client.post("/api/collect", json={
         "url": "https://mp.weixin.qq.com/s?__biz=b",

@@ -9,7 +9,6 @@ import threading
 import time
 import uuid
 import webbrowser
-from pathlib import Path
 from typing import Literal
 
 from fastapi import FastAPI, HTTPException
@@ -17,6 +16,7 @@ from fastapi.responses import HTMLResponse
 from pydantic import BaseModel, Field
 
 from .task_worker import run_collect_task
+from .workspace import DEFAULT_OUTPUT_ROOT
 
 app = FastAPI(title="gzh-information", docs_url=None, redoc_url=None)
 STATE: dict = {"stage": "idle", "detail": {}, "running": False, "task_id": None}
@@ -27,7 +27,7 @@ _NO_PROGRESS_SECONDS = 600
 
 class CollectRequest(BaseModel):
     url: str
-    output: str = str(Path.home() / "Documents" / "gzh-information-data")
+    output: str = str(DEFAULT_OUTPUT_ROOT)
     account_name: str | None = None
     max_articles: int | None = None
     max_new_articles: int | None = Field(default=None, ge=1)
@@ -79,7 +79,7 @@ async function poll(){let s=await (await fetch('/api/status')).json();status.tex
 
 @app.get("/", response_class=HTMLResponse)
 def home() -> str:
-    return HTML.replace("__OUTPUT__", str(Path.home() / "Documents" / "gzh-information-data"))
+    return HTML.replace("__OUTPUT__", str(DEFAULT_OUTPUT_ROOT))
 
 
 @app.get("/api/status")

@@ -10,13 +10,13 @@
 
 ## 第二关：核对目标和工作区
 
-本次示例账号是 `Netskao`，起始文章链接是 `https://mp.weixin.qq.com/s/cleXgWkz9UlinSLeQdLefQ`。用户可替换为其他公开公众号，届时要用该账号独立工作区。现有 Netskao 工作区已有 **1 篇**通过最低正文检查；这不是整号完成证明。不要假设工作区就在仓库目录，更不要新建第二份 `Netskao/` 来掩盖旧失败。先从已给的工作区路径或本机文件查找 `Netskao/database/archive.sqlite3`，再确认同目录有 `audit/human-agent-progress.json`，且账号名称一致；存在多个候选就停止询问确切路径。
+本次示例账号是 `Netskao`，起始文章链接是 `https://mp.weixin.qq.com/s/cleXgWkz9UlinSLeQdLefQ`。用户可替换为其他公开公众号，届时要用该账号独立工作区。**唯一续传位置**为 `/Users/zhanghang/Downloads/obsidian/公众号读取/Netskao`；截至 2026-09-28 有 **5 篇**通过最低正文长度检查，列表未完成。旧的 1 篇工作区和原始 5 篇工作区仍可能存在；不要选错、覆盖或再次新建第二份工作区。先核对该目录的 `database/archive.sqlite3`、`audit/human-agent-progress.json` 和账号名；不上传任何采集数据到云端或 GitHub。
 
-当前已知第二篇曾卡在 `account_mismatch`、`copy_link_failed` 和 `profile_restore_failed`。微信 4.x 的窄标签可能隐藏文章菜单；执行器在不能唯一确认菜单时会停，不应让模型猜坐标。
+已知旧轮次卡在 `account_mismatch`、`copy_link_failed`；新一轮第 6 篇卡在标题 OCR 乱码与主页标签恢复（`article_not_opened` / `profile_restore_failed`）。微信 4.x 的窄标签可能隐藏文章菜单；执行器在不能唯一确认菜单时会停，不应让模型猜坐标。新增的前台 OCR 复核和单窗口回页顶逻辑只有自动测试证据，尚无微信实机通过收据。
 
 ## 第三关：本机命令可用时直接执行
 
-以下 `<仓库目录>` 和 `<已有工作区>` 必须替换成**本机已核对的绝对路径**，不要原样提交尖括号。先确认没有另一采集进程控制微信，并检查窗口诊断：
+以下 `<仓库目录>` 必须替换成**本机已核对的绝对路径**，不要原样提交尖括号。`<已有工作区>` 均使用上文唯一续传位置。先确认没有另一采集进程控制微信，并检查窗口诊断：
 
 ```bash
 cd '<仓库目录>'
