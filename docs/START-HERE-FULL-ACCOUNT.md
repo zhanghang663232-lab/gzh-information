@@ -4,6 +4,6 @@
 
 **当前真实状态**：Netskao 示例已经保存并核对 **1 篇**；主页显示 1271 篇原创内容，但列表未完成，第二篇因账号核对、隐藏菜单/复制链接与主页恢复失败。`shareNum`、`oldLikeNum`、评论明细未验收。**尚未实现整账号全量读取**。
 
-请按 [完整运行手册](doubao-full-account-runbook.md) 的门 1→门 2→门 3 执行。先使用同一个 Netskao 工作区单篇复测隐藏菜单与主页恢复；只有真实 URL、正文首尾、账号一致且微信仍登录才扩到 5 篇，再每轮最多新增 10 篇并审计。不要设置累计 `--max-articles`。任何一步无法唯一核对时停并读 `audit/human-agent-last-error.json`、`human-agent-action-trace.json`、`human-agent-progress.json`。
+请按 [完整运行手册](doubao-full-account-runbook.md) 的门 1→门 2→门 3 执行。先使用同一个 Netskao 工作区单篇复测隐藏菜单与主页恢复；真实 URL、正文首尾、账号一致且微信仍登录后，运行**不带篇数上限**的 `resume`，让一个进程持续读取，不用每 10 篇手动重启。不要设置 `--max-articles` 或 `--max-new-articles`。任何一步无法唯一核对时停并读 `audit/human-agent-last-error.json`、`human-agent-action-trace.json`、`human-agent-progress.json`。
 
 遇到故障先查 [历次故障总账](incident-ledger.md) 与 [按停止原因排查](troubleshooting.md)。修代码要加脱敏复现测试，运行 `.venv/bin/python -m pytest -q`，不上传运行数据。最终只有列表末尾证据、去重文章及正文覆盖率、五项指标各自覆盖率、评论明细状态和缺失清单都可审计，才可向用户报告全量；否则如实报告部分成果和最后卡点。

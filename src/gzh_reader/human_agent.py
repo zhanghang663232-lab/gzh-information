@@ -1772,7 +1772,7 @@ class MacHumanAccountCollector:
 
     def collect(
         self, url: str, output: Path, *, max_articles: int | None = None,
-        account_name: str | None = None, max_new_articles: int = 5,
+        account_name: str | None = None, max_new_articles: int | None = None,
     ) -> Path:
         with ui_control_lock():
             return self._collect_unlocked(
@@ -1782,10 +1782,10 @@ class MacHumanAccountCollector:
 
     def _collect_unlocked(
         self, url: str, output: Path, *, max_articles: int | None = None,
-        account_name: str | None = None, max_new_articles: int = 5,
+        account_name: str | None = None, max_new_articles: int | None = None,
     ) -> Path:
-        if not 1 <= max_new_articles <= 10:
-            raise ValueError("本轮最多新增篇数必须在 1 到 10 之间")
+        if max_new_articles is not None and max_new_articles < 1:
+            raise ValueError("最多新增篇数必须大于零；不填表示持续读取")
         self.controller.open_profile(url, account_name)
         profile = self.controller.scroll_to_top()
         lines = self.controller.ocr(profile)
@@ -1823,7 +1823,13 @@ class MacHumanAccountCollector:
         skipped_known = 0
         consecutive_failures = 0
         last_open_at = 0.0
-        max_open_attempts = 3 * max_new_articles
+        # A blank limit means one invocation continues through the account.
+        # Keep an independent, generous attempt ceiling to prevent a broken
+        # virtualized list from opening the same cards indefinitely. This is
+        # not an article-count cap or evidence that the list is complete.
+        max_open_attempts = (3 * max_new_articles if max_new_articles is not None
+                             else max(300, 3 * total))
+        new_article_limit = max_new_articles if max_new_articles is not None else float("inf")
         action_trace: list[dict] = []
 
         def record_action(stage: str) -> None:
@@ -1849,7 +1855,7 @@ class MacHumanAccountCollector:
             repeated < 30
             and identity_recoveries < 3
             and (max_articles is None or len(completed_urls) < max_articles)
-            and new_in_run < max_new_articles
+            and new_in_run < new_article_limit
             and attempts < max_open_attempts
         ):
             try:
@@ -1969,7 +1975,7 @@ class MacHumanAccountCollector:
                 card_order = []
             for index in card_order:
                 card = cards[index]
-                if attempts >= max_open_attempts or new_in_run >= max_new_articles:
+                if attempts >= max_open_attempts or new_in_run >= new_article_limit:
                     break
                 hint = f"{fingerprint}|{index}"
                 if hint in seen_hints:
@@ -2041,6 +2047,13 @@ class MacHumanAccountCollector:
                                 "new_in_run": new_in_run,
                                 "captured_article_count": len(completed_urls),
                             })
+                            if new_in_run % 10 == 0:
+                                export_all(store, ws.root)
+                                audit_workspace(store, ws.root)
+                                self.progress("human_checkpoint", {
+                                    "new_in_run": new_in_run,
+                                    "captured_article_count": len(completed_urls),
+                                })
                             if known_cards.get(signature) not in (None, capture.url):
                                 known_cards.pop(signature, None)
                                 ambiguous_cards.add(signature)
@@ -2135,7 +2148,7 @@ class MacHumanAccountCollector:
                     "skipped_known_cards": skipped_known,
                     "complete": False,
                 })
-                if halt or restart_profile or new_in_run >= max_new_articles or attempts >= max_open_attempts or (
+                if halt or restart_profile or new_in_run >= new_article_limit or attempts >= max_open_attempts or (
                     max_articles is not None and len(completed_urls) >= max_articles
                 ):
                     break
@@ -2192,7 +2205,7 @@ class MacHumanAccountCollector:
                 break
             if halt:
                 break
-            if new_in_run >= max_new_articles:
+            if new_in_run >= new_article_limit:
                 stop_reason = "batch_new_limit"
                 break
             if attempts >= max_open_attempts:
@@ -2212,7 +2225,7 @@ class MacHumanAccountCollector:
                 break
         if identity_recoveries >= 3:
             stop_reason = "identity_recovery_limit"
-        elif new_in_run >= max_new_articles:
+        elif new_in_run >= new_article_limit:
             stop_reason = "batch_new_limit"
         elif attempts >= max_open_attempts:
             stop_reason = "batch_open_limit"

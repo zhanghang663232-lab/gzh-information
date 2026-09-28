@@ -13,7 +13,7 @@ def test_home_and_foreground_consent_gate():
     assert home.status_code == 200
     assert "测试模型连接" in home.text
     assert "豆包（火山方舟）" in home.text
-    assert "本轮最多新增篇数" in home.text
+    assert "本次新增篇数上限（试跑才填写；整账号读取留空）" in home.text
     assert "检查能否读取微信画面" in home.text
     assert "支持任意公开公众号" in home.text
     assert "例如：监所家属" not in home.text
@@ -111,6 +111,15 @@ def test_bounded_run_is_reported_incomplete_not_complete(monkeypatch, tmp_path):
     assert response.status_code == 200
     assert STATE["stage"] == "incomplete"
     assert STATE["detail"]["reason"] == "batch_new_limit"
+
+
+def test_web_request_defaults_to_full_account_not_ten_articles():
+    from gzh_reader.web import CollectRequest
+
+    request = CollectRequest(url="https://mp.weixin.qq.com/s/example")
+    assert request.max_new_articles is None
+    assert request.max_articles is None
+    assert CollectRequest(url=request.url, max_new_articles=50).max_new_articles == 50
 
 
 def test_stalled_worker_is_terminated_without_touching_wechat(monkeypatch):

@@ -42,5 +42,5 @@ def test_agent_pause_and_call_budget():
 
     agent = CardPlanAgent(Model(), max_calls=1)
     assert agent.plan_cards(CARDS) is None
-    with pytest.raises(AgentDecisionError, match="预算"):
-        agent.plan_cards(CARDS)
+    assert agent.plan_cards(CARDS) == [0, 1]
+    assert agent.calls == 1

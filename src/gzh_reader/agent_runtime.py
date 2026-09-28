@@ -41,10 +41,11 @@ class CardPlanAgent:
     def plan_cards(self, cards: list[ProfileCard]) -> list[int] | None:
         if not cards:
             return []
-        if len(cards) > 20:
-            raise AgentDecisionError("当前页面候选文章过多，已停止模型决策")
-        if self.calls >= self.max_calls:
-            raise AgentDecisionError("模型调用预算已用完，已保留断点")
+        if len(cards) > 20 or self.calls >= self.max_calls:
+            # Model calls are optional ordering advice, not the acquisition
+            # engine. Exhausting the cost budget must not impose an unrelated
+            # whole-account article limit; preserve the observed UI order.
+            return list(range(len(cards)))
         public_cards = [
             {"id": index, "title": card.title[:120],
              "readNum": card.read_num, "likeNum": card.like_num}

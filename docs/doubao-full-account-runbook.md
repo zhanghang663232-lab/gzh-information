@@ -38,21 +38,15 @@
 
 门 1 通过要求：本轮 `new_in_run >= 1`（历史已有 1 篇不能替代新复测）；至少一个真实且不同的 `mp.weixin.qq.com` URL；对应正文文件存在、标题与微信一致，人工抽查首尾段；账号身份无冲突。阅读/点赞/转发/评论计数分别标记有值、零或缺失。**任何一个失败就停在该步骤修复，不得用连续重试伪造通过。**特别先验证“复制链接”点击后剪贴板确实出现本篇真实 URL；OCR 正文成功不能替代链接成功。目标标签菜单按钮若不可见，就先减少无关标签或放大微信窗口；程序不得点击推算出来的坐标。
 
-### 门 2：扩至 5 篇，再以每轮最多 10 篇续读
+### 门 2：不设篇数上限，持续读取同一账号
 
-门 1 通过后，同一工作区执行：
-
-```bash
-.venv/bin/gzh-reader resume --workspace '<输出父目录>/Netskao' --max-new-articles 5
-```
-
-核对 5 篇的不同 URL、标题、正文首尾、各字段缺失。无串号、无重复误计、微信未退出登录后，再按每轮最多新增 10 篇继续：
+门 1 通过后，同一工作区执行一次：
 
 ```bash
-.venv/bin/gzh-reader resume --workspace '<输出父目录>/Netskao' --max-new-articles 10
+.venv/bin/gzh-reader resume --workspace '<输出父目录>/Netskao'
 ```
 
-一轮结束后**先审计再决定是否开始下一轮**。仅当 `stop_reason=batch_new_limit`、`new_in_run>0`、账号仍登录且工作区无身份冲突时，才直接续下一轮。出现 `link_copy_failed`、`body_missing`、`profile_restore_failed`、`wechat_login_required`、`account_mismatch`、`article_not_opened`、小程序弹窗、连续新增 0 或窗口不可读时，停止循环并按故障手册定位。不要换号/IP、修改系统代理、自动重新登录或无限重复同一篇。批量导致退出登录的真实触发条件尚未证实。
+不加 `--max-new-articles` 和 `--max-articles` 时，程序不会每 10 篇主动结束；每新增 10 篇会更新导出与审计，数据库逐篇保存。保持微信窗口可见，并定期检查状态；用户可点击“停止本轮”，下次用同一命令续读。程序仍会因列表重复、打开尝试保护、身份/窗口不明或明确重新登录而停下。出现 `link_copy_failed`、`body_missing`、`profile_restore_failed`、`wechat_login_required`、`account_mismatch`、`article_not_opened`、小程序弹窗、连续新增 0 或窗口不可读时，**先诊断，不自动无限重试**。不要换号/IP、修改系统代理或自动重新登录。批量导致退出登录的真实触发条件尚未证实。
 
 每次修代码：先提交可复现的脱敏失败收据与单元测试，再修改一个故障步骤；运行 `.venv/bin/python -m pytest -q` 和 `git diff --check`。只把源码、测试、脱敏说明同步到 GitHub；数据库、正文、截图、Cookie、API key 不上传。
 

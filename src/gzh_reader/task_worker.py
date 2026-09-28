@@ -42,7 +42,7 @@ def run_collect_task(payload: dict, events) -> None:
             payload["url"], Path(payload["output"]),
             account_name=payload.get("account_name"),
             max_articles=payload.get("max_articles"),
-            max_new_articles=payload.get("max_new_articles", 5),
+            max_new_articles=payload.get("max_new_articles"),
         )
         progress_path = workspace / "audit" / "human-agent-progress.json"
         try:

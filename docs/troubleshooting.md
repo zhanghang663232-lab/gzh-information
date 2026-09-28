@@ -7,12 +7,12 @@
 1. **核对版本**：根目录必须有 `安装.command`、`启动.command`、`src/gzh_reader/`；README 第一行是 `# gzh-information v2`。若当前程序要求 `down.mptext.top` 的 API key 或运行 `wechat-archive/scripts/archive_account.py`，先停止，切换到 v2 分支。
 2. **核对目标**：记录用户提供的一篇文章链接、微信主页上肉眼可见的公众号名和输出目录。只采集同一个账号；账号名或文章标题冲突时停，不猜测。
 3. **核对环境**：Apple Silicon Mac、桌面微信已登录、目标公众号主页可见；实际启动程序已获辅助功能和屏幕录制权限。权限“已授予”不代表微信画面实际可读；必要时运行 `gzh-reader doctor --visual`。
-4. **先运行小批次**：图形向导本轮最多新增设为 1 或 5；首次关闭模型复核与 Agent 模式。程序默认每轮最多新增 5、硬上限 10，另有打开尝试上限。不要为了追求“全量”取消上限或自动连续重试。
+4. **先验证单篇，再持续读取**：首次可把可选新增上限设为 1，关闭模型复核与 Agent 模式；真实链接、正文和账号确认后，把两个篇数上限留空。程序默认持续读取、每 10 篇更新导出与审计，仍保留异常打开尝试保护，不会对错误自动无限重试。
 5. **读真实结果**：打开次数、`new_in_run`、`stop_reason`、不同真实 URL、有效正文、五项互动数字、公开评论明细分别核对。进度条或主页“原创内容”总数都不是完成证明。
 6. **遇到错误先停**：阅读下表的停止原因，再核对 `audit/human-agent-progress.json`、`audit/human-agent-last-error.json`、`audit/human-agent-action-trace.json` 和 `audit/coverage.json`。不要在未定位错误时重新启动相同批次。
 7. **恢复时使用同一工作区**：已保存的正文应由 SQLite 和真实 URL 去重；再次采集新文章前重新观察当前微信窗口。更换公众号须使用独立工作区，不复用旧账号的卡片提示。
 
-命令行仅作维护入口；普通用户优先双击 `安装.command`、`启动.command`，使用本地中文向导。维护入口：`gzh-reader doctor --visual`、`gzh-reader audit --workspace '<账号目录>'`、`gzh-reader resume --workspace '<账号目录>' --max-new-articles 5`。
+命令行仅作维护入口；普通用户优先双击 `安装.command`、`启动.command`，使用本地中文向导。维护入口：`gzh-reader doctor --visual`、`gzh-reader audit --workspace '<账号目录>'`、`gzh-reader resume --workspace '<账号目录>'`。
 
 ## 1. 先按停止原因分流
 
@@ -31,7 +31,7 @@
 
 即使程序显示 `incomplete`，也要看具体 `stop_reason`。它可能表示正常到达单轮上限，也可能表示窗口/文章失败。`complete=false` 是当前账号历史列表未获完整枚举证明，不是本轮所有正文都失败。
 
-**10 篇限制的来源**：这是项目自行设置的单轮保护阈值，不是微信规定，也不是账号累计上限。图形向导和服务端限定 `max_new_articles` 为 1–10，采集器再次校验；默认 5。工作区累计上限是另一个可留空的 `max_articles`。到 `batch_new_limit` 后，确认微信仍正常、核对本轮真实 URL 与正文，再在同一工作区续采。既往约 30 篇后退出登录的观察尚不能证明具体触发阈值，因此不要把 10 当作“微信安全值”。
+**旧版 10 篇限制的来源**：它曾是本项目自行设置的单轮阈值，不是微信规定。现已移除默认 5/最高 10 的限制：`max_new_articles` 和累计 `max_articles` 均为可选试跑上限，不填就是一次持续读取。每 10 篇的导出/审计是**检查点，不是停止点**。若用户明确填了上限，到 `batch_new_limit` 后仍是未完成状态。既往约 30 篇后退出登录的观察尚不能证明具体触发阈值；持续模式遇到登录、身份或界面异常仍要停止。
 
 ## 2. 已遇到的故障、证据与处理
 

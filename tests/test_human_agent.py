@@ -1795,3 +1795,45 @@ def test_any_article_step_failure_stops_before_next_card(tmp_path: Path):
     assert progress["stop_reason"] == "page_bottom_failed"
     assert progress["attempts"] == 1
     assert extra_closes == []
+
+
+def test_default_collect_continues_past_ten_and_checkpoints(tmp_path: Path, monkeypatch):
+    profile = Window(1, "公众号", 0, 0, 400, 600, 0, 42)
+
+    class Controller:
+        index = 0
+
+        def open_profile(self, url, account_name):
+            return profile
+
+        def scroll_to_top(self):
+            return profile
+
+        def focus_profile(self):
+            return profile
+
+        def ocr(self, window):
+            return [line("监所家属", 30), line("12篇原创内容", 60),
+                    line(f"第{self.index + 1}篇文章", 180),
+                    line(f"阅读{100 + self.index} 赞1", 205)]
+
+        def scroll(self):
+            self.index += 1
+            return self.index < 12
+
+    controller = Controller()
+    collector = MacHumanAccountCollector(controller=controller)
+    collector._capture_card = lambda window, card, account_name, **kwargs: HumanCapture(
+        url=f"https://mp.weixin.qq.com/s/article-{controller.index + 1}",
+        title=card.title, body="这是公开文章正文。" * 30,
+        read_num=card.read_num, like_num=card.like_num,
+        share_num=None, comment_num=None,
+    )
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    workspace = collector.collect("https://mp.weixin.qq.com/s/example", tmp_path,
+                                  account_name="监所家属")
+    progress = json.loads((workspace / "audit/human-agent-progress.json").read_text())
+    assert progress["new_in_run"] == 12
+    assert progress["stop_reason"] == "scroll_failed"
+    assert progress["complete"] is False  # A failed scroll is not bottom proof.
+    assert (workspace / "audit/coverage.json").exists()
