@@ -89,6 +89,7 @@ def test_account_name_and_share_parsing():
     lines = [line("•••", 10), line("监所家属", 30), line("300篇原创内容", 60)]
     assert account_name_from_profile(lines) == "监所家属"
     assert parse_share_num("点赞 5  转发 12") == 12
+    assert parse_share_num("阅读 5652 点赞 23 1个朋友转发") is None
 
 
 def test_account_identity_must_match_profile_and_article_author():
@@ -111,6 +112,9 @@ def test_noisy_badge_footer_needs_clean_article_byline():
     controller.verify_article_account("Netskao")
     with pytest.raises(RuntimeError, match="顶部未能核对"):
         controller.verify_article_account("Netskaot")
+    controller.ocr = lambda window, **kwargs: [line("原创 NetskaoTech 2026年9月26日", 115)]
+    with pytest.raises(RuntimeError, match="顶部未能核对"):
+        controller.verify_article_account("Netskao")
 
 
 def test_explicit_wechat_relogin_notice_stops_before_profile_actions():
@@ -323,6 +327,17 @@ def test_verified_menu_selects_only_target_tab_when_other_menus_exist():
     assert verified_article_menu_center(
         title, lines, 1022, [(410, 24)]
     ) is None
+
+
+def test_target_article_tabs_tolerate_ocr_badge_prefix():
+    """OCR may read a tab badge count (e.g. '40') as a prefix to the title."""
+    title = "苹果史上最贵新品要开卖了，强的离谱！"
+    observed = OcrLine(text="40 苹果史上最贵新品要开卖了.（", x=404, y=17, width=208, height=15)
+    matches = target_article_tabs(title, [observed], 1077)
+    assert len(matches) == 1
+    assert verified_article_menu_center(title, [observed], 1077, [(605, 24)]) == (605, 24)
+    unrelated = OcrLine(text="旧版苹果史上最贵新品要开卖了.（", x=404, y=17, width=208, height=15)
+    assert target_article_tabs(title, [unrelated], 1077) == []
 
 
 def test_article_browser_selection_prefers_verified_title_over_first_error_window():
@@ -734,7 +749,7 @@ def test_open_profile_stops_on_blank_wechat_window_without_clicking():
         controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属")
 
 
-def test_open_profile_stops_before_ocr_when_main_window_is_unshared():
+def test_open_profile_stops_when_unshared_main_is_not_verified_frontmost():
     main = Window(1, "微信", 0, 0, 880, 640, 0, 42, True, 0)
     controller = MacHumanController.__new__(MacHumanController)
     controller.require_active_session = lambda: None
@@ -746,8 +761,26 @@ def test_open_profile_stops_before_ocr_when_main_window_is_unshared():
     controller._raise = lambda window: True
     controller.ocr = lambda window: pytest.fail("不可共享窗口不应反复截图")
     controller.click = lambda x, y: pytest.fail("不可共享窗口不能盲点")
-    with pytest.raises(RuntimeError, match="未向系统共享画面"):
+    with pytest.raises(RuntimeError, match="未确认位于最前"):
         controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属")
+
+
+def test_open_profile_uses_visible_ocr_but_never_clicks_without_unique_link():
+    main = Window(1, "微信", 0, 0, 880, 640, 0, 42, True, 0)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.require_active_session = lambda: None
+    controller._tabbed_profile = lambda account: None
+    controller.window = lambda title: main if title == "微信" else None
+    controller.windows = lambda: [main]
+    controller.activate = lambda: None
+    controller.wait_window = lambda title: main
+    controller._raise = lambda window: True
+    calls = []
+    controller.ocr = lambda window, **kwargs: (calls.append(kwargs) or [line("聊天列表", 100)])
+    controller.click = lambda x, y: pytest.fail("未识别链接不能点击")
+    with pytest.raises(RuntimeError, match="链接不唯一（0 个）"):
+        controller.open_profile("https://mp.weixin.qq.com/s/test", "监所家属")
+    assert calls == [{"visible": True}]
 
 
 def test_open_profile_ignores_old_offscreen_article_before_chat_link_lookup():
@@ -1026,6 +1059,41 @@ def test_tabbed_close_returns_to_verified_profile_without_command_w():
     controller._close_window = lambda window: pytest.fail("标签页模式不得关闭整个窗口")
     controller.close_article()
     assert controller.active_article_number is None
+
+
+def test_tabbed_close_recovers_via_pinned_article_footer(monkeypatch):
+    article = Window(42, "微信 (窗口)", 10, 20, 900, 800, 0, 123, True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "Netskao"
+    controller.active_article_number = 42
+    controller.require_active_session = lambda: None
+    controller.browser_by_number = lambda number: article if number == 42 else None
+    clicked = []
+    controller._tabbed_profile = lambda account: article if clicked else None
+    controller.ocr = lambda window: [line("Netskao", 720, 80), line("正文" * 30, 200)]
+    controller._raise = lambda window: True
+    controller.require_foreground = lambda window: None
+    controller.Quartz = type("Q", (), {"kCGEventFlagMaskCommand": 1})
+    controller.hotkey = lambda key, flags: None
+    controller.click = lambda x, y: clicked.append((x, y))
+    controller._close_window = lambda window: pytest.fail("不得关闭整个文章窗口")
+    monkeypatch.setattr("gzh_reader.human_agent.time.sleep", lambda seconds: None)
+    controller.close_article()
+    assert clicked == [(62, 750)]
+    assert controller.active_article_number is None
+
+
+def test_tabbed_close_does_not_recover_from_unpinned_window():
+    article = Window(42, "微信 (窗口)", 0, 0, 900, 800, 0, 123, True)
+    controller = MacHumanController.__new__(MacHumanController)
+    controller.tabbed_profile_account = "Netskao"
+    controller.require_active_session = lambda: None
+    controller.window = lambda title: article
+    controller.ocr = lambda window: [line("文章正文" * 30, 200)]
+    controller._tabbed_profile = lambda account: None
+    controller._raise = lambda window: pytest.fail("未锁定文章不得前置")
+    with pytest.raises(RuntimeError, match="已验证文章窗口"):
+        controller.close_article()
 
 
 def test_miniprogram_prompt_uses_cancel_only(monkeypatch):

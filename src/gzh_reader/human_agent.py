@@ -136,10 +136,18 @@ def target_article_tabs(title: str, lines: list[OcrLine], window_width: float) -
     expected = _plain_title(title)
     if len(expected) < 8:
         return []
+    prefix = expected[:6]
+    def label_matches(value: str) -> bool:
+        observed = _plain_title(value)
+        index = observed.find(prefix)
+        # A tab badge or close glyph may precede the title. Do not accept
+        # arbitrary text containing the same six characters later on.
+        return 0 <= index <= 4 and all(char.isdigit() or char == "x"
+                                          for char in observed[:index])
     return [
         line for line in lines
         if line.cy < 52 and 75 < line.cx < window_width - 95
-        and _plain_title(line.text).startswith(expected[:6])
+        and label_matches(line.text)
     ]
 
 
@@ -703,7 +711,13 @@ class MacHumanController:
             [tuple(candidate) for candidate in centers],
         )
         if center is None:
-            raise RuntimeError("未找到唯一且属于目标文章标签的菜单按钮，已停止")
+            # A narrow WeChat tab may hide the control entirely. Its old
+            # location can now be the close button or Ask-AI; an estimated
+            # coordinate is not enough evidence to send a click.
+            raise RuntimeError(
+                "目标文章标签没有可见且唯一的菜单按钮；已停止，未点击估算位置。"
+                "请减少无关标签或放大微信窗口后单篇复测"
+            )
         return center
 
     def click(self, x: float, y: float) -> None:
@@ -1045,6 +1059,34 @@ class MacHumanController:
                 return current
         raise ArticleNotOpenedError("当前页面未能确认目标文章标题；未选择其他标签")
 
+    def _profile_from_verified_article(self, article: Window, account_name: str) -> Window:
+        """Return via a verified article footer, never via an estimated tab."""
+        if not self._raise(article):
+            raise RuntimeError("无法前置唯一的目标文章窗口；已停止")
+        self.require_foreground(article)
+        self.hotkey(125, self.Quartz.kCGEventFlagMaskCommand)
+        time.sleep(0.6)
+        current = self.browser_by_number(article.number)
+        if current is None:
+            raise RuntimeError("滚动后目标文章窗口不可见；已停止")
+        footer_links = [line for line in self.ocr(current)
+                        if account_name_ocr_match(line.text, account_name)
+                        and line.cy > current.height * 0.7]
+        if len(footer_links) != 1:
+            raise RuntimeError("文章页尾未能唯一确认目标公众号入口；已停止，未点击头像")
+        self.require_foreground(current)
+        name_line = footer_links[0]
+        avatar_x = name_line.x - max(22.0, name_line.height * 1.4)
+        self.click(current.x + avatar_x, current.y + name_line.cy)
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            tabbed = self._tabbed_profile(account_name)
+            if tabbed is not None:
+                self.tabbed_profile_account = account_name
+                return tabbed
+            time.sleep(0.2)
+        raise RuntimeError("已点击经核对的公众号头像，但未能确认主页；已停止")
+
     def open_profile(self, url: str, account_name: str | None = None) -> Window:
         """Restore the account profile from a public article in WeChat itself."""
         self.require_active_session()
@@ -1118,37 +1160,7 @@ class MacHumanController:
                         "可见微信窗口中无法唯一确认目标公众号文章；已停止，未关闭或点击其他窗口"
                         f"（候选 {len(articles)} 个；{getattr(self, 'profile_probe_reason', 'unknown')}）"
                     )
-                article = articles[0]
-                if not self._raise(article):
-                    raise RuntimeError("无法前置唯一的目标文章窗口；已停止")
-                self.require_foreground(article)
-                # The account footer is usually below a long article. Move
-                # only the verified article to its bottom, then inspect the
-                # same exact Quartz window before clicking its avatar.
-                self.hotkey(125, self.Quartz.kCGEventFlagMaskCommand)
-                time.sleep(0.6)
-                article = self.browser_by_number(article.number)
-                if article is None:
-                    raise RuntimeError("滚动后目标文章窗口不可见；已停止")
-                footer_links = [
-                    line for line in self.ocr(article)
-                    if account_name_ocr_match(line.text, account_name)
-                    and line.cy > article.height * 0.7
-                ]
-                if len(footer_links) != 1:
-                    raise RuntimeError("文章页尾未能唯一确认目标公众号入口；已停止，未点击头像")
-                self.require_foreground(article)
-                name_line = footer_links[0]
-                avatar_x = name_line.x - max(22.0, name_line.height * 1.4)
-                self.click(article.x + avatar_x, article.y + name_line.cy)
-                deadline = time.monotonic() + 8
-                while time.monotonic() < deadline:
-                    tabbed = self._tabbed_profile(account_name)
-                    if tabbed is not None:
-                        self.tabbed_profile_account = account_name
-                        return tabbed
-                    time.sleep(0.2)
-                raise RuntimeError("已点击经核对的公众号头像，但未能确认主页；已停止")
+                return self._profile_from_verified_article(articles[0], account_name)
             # Ignore old WebViews in another Space. The visible target or
             # chat-link path below still needs independent verification.
             if any(item.title == "微信 (窗口)" and item.onscreen
@@ -1181,15 +1193,20 @@ class MacHumanController:
             self._close_window(browser)
             time.sleep(0.8)
         main = self.wait_window("微信")
-        self._raise(main)
+        if not self._raise(main):
+            raise RuntimeError("无法前置微信主窗口；已停止，未点击聊天")
         if main.sharing_state == 0:
-            raise RuntimeError(
-                "当前微信主窗口未向系统共享画面，程序无法辨认聊天或搜索结果。"
-                "请先在微信打开目标文章，再用图形向导检查文章窗口能否读取；"
-                "此状态下已停止自动点击"
-            )
+            # Recent WeChat builds can deny CGWindow image sharing while the
+            # same frontmost window remains visible in the composed display.
+            # Screen OCR is safe only after pinning this exact window; it must
+            # still find the unique article URL below before any click.
+            foreground = [item for item in self.windows()
+                          if item.onscreen and item.layer == 0 and item.width >= 300
+                          and item.title in {"微信", "微信 (窗口)", "公众号"}]
+            if not main.onscreen or not foreground or foreground[0].number != main.number:
+                raise RuntimeError("微信主窗口不可共享且未确认位于最前；已停止自动点击")
         marker = url.rstrip("/").rsplit("/", 1)[-1]
-        main_lines = self.ocr(main)
+        main_lines = self.ocr(main, visible=True) if main.sharing_state == 0 else self.ocr(main)
         if not main_lines:
             # An onscreen Quartz window is not evidence that WeChat has
             # rendered its signed-in UI. This can happen during relogin or
@@ -1202,9 +1219,9 @@ class MacHumanController:
             line for line in main_lines
             if "mp.weixin.qq.com" in line.text and marker in line.text
         ]
-        if not links:
-            raise RuntimeError("微信主窗口中没有看到用于恢复的示例文章链接")
-        line = links[-1]
+        if len(links) != 1:
+            raise RuntimeError(f"微信主窗口中用于恢复的示例文章链接不唯一（{len(links)} 个）；已停止点击")
+        line = links[0]
         self.click(main.x + line.cx, main.y + line.cy)
         browser = self.wait_window("微信 (窗口)", timeout=10)
         time.sleep(1)
@@ -1296,16 +1313,31 @@ class MacHumanController:
 
     def verify_article_account(self, account_name: str) -> None:
         """Require a clean byline before accepting a badge-noisy footer."""
-        browser = self.focus_browser()
-        lines = self.ocr(browser, top_fraction=0.45)
-        if not any(
-            line.text.strip() == account_name
-            or line.text.strip().startswith(account_name + " ")
-            for line in lines if 55 <= line.cy <= browser.height * 0.45
-        ):
-            raise AccountMismatchError(
-                f"文章顶部未能核对公众号 {account_name}；拒绝仅凭页尾 OCR 入库"
+        def byline_matches(value: str) -> bool:
+            observed = value.strip()
+            if account_name_ocr_match(observed, account_name):
+                return True
+            if not ("原创" in observed or re.search(r"\d{4}年\d{1,2}月", observed)):
+                return False
+            escaped = re.escape(account_name)
+            if account_name.isascii():
+                return bool(re.search(rf"(?<![A-Za-z0-9_]){escaped}(?![A-Za-z0-9_])", observed))
+            return bool(re.search(rf"(?:^|[\s·•]){escaped}(?=$|[\s·•\d])", observed))
+
+        for attempt in range(3):
+            browser = self.focus_browser()
+            lines = self.ocr(browser, top_fraction=0.45)
+            hit = any(
+                byline_matches(line.text)
+                for line in lines if 55 <= line.cy <= min(200, browser.height * 0.3)
             )
+            if hit:
+                return
+            if attempt < 2:
+                time.sleep(1.5)
+        raise AccountMismatchError(
+            f"文章顶部未能核对公众号 {account_name}；拒绝仅凭页尾 OCR 入库"
+        )
 
     def ocr_page_text(self, title: str, browser: Window) -> str:
         """Read visible pages only, stopping on a repeated verified footer."""
@@ -1444,9 +1476,12 @@ class MacHumanController:
             return
         if account_name:
             # Command-W can discard the profile tab along with the article.
-            # Keep the article open and return through a verified tab instead.
+            # Try a verified profile tab first, then the pinned article's
+            # footer avatar. Never close the whole WebView or guess a tab.
             if self._tabbed_profile(account_name) is None:
-                raise RuntimeError("无法确认公众号主页标签；已保留文章窗口，未关闭")
+                if getattr(self, "active_article_number", None) != browser.number:
+                    raise RuntimeError("无法确认公众号主页标签或已验证文章窗口；已保留窗口")
+                self._profile_from_verified_article(browser, account_name)
             self.active_article_number = None
             return
         self._close_window(browser)
